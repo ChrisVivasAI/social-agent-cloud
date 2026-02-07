@@ -351,12 +351,29 @@ export class VideoEditorAgent {
       // Step 2: Process video track items (cut source clips)
       const videoCutPaths: string[] = [];
 
+      // Build a list of available asset IDs for fuzzy matching
+      const assetIds = Array.from(downloadedPaths.keys());
+      logger.info(`EDL has ${edl.tracks.video.length} video track items, ${assetIds.length} available assets: ${assetIds.join(", ")}`);
+
       for (const item of edl.tracks.video) {
-        if (item.type === "video_clip" && item.source_asset_id) {
-          const sourcePath = downloadedPaths.get(item.source_asset_id);
+        const assetId = item.source_asset_id;
+        if (item.type === "video_clip" && assetId) {
+          let sourcePath = downloadedPaths.get(assetId);
+
+          // Gemini may generate slightly wrong IDs — try partial match
+          if (!sourcePath) {
+            const partialMatch = assetIds.find(
+              (id) => id.startsWith(assetId.substring(0, 8)) || assetId.startsWith(id.substring(0, 8)),
+            );
+            if (partialMatch) {
+              logger.info(`Fuzzy matched asset ${assetId} -> ${partialMatch}`);
+              sourcePath = downloadedPaths.get(partialMatch);
+            }
+          }
+
           if (!sourcePath) {
             logger.warn(
-              `Source asset ${item.source_asset_id} not found, skipping clip ${item.id}`,
+              `Source asset ${assetId} not found (type: ${item.type}), skipping clip ${item.id}`,
             );
             continue;
           }
@@ -385,6 +402,17 @@ export class VideoEditorAgent {
           const localPath = await this.ffmpeg.downloadToTemp(item.source_url);
           tempFiles.push(localPath);
           videoCutPaths.push(localPath);
+        } else {
+          logger.warn(`Skipping EDL video item ${item.id} (type: ${item.type}, has asset_id: ${!!item.source_asset_id}, has source_url: ${!!item.source_url})`);
+        }
+      }
+
+      // Fallback: if EDL produced no usable clips, concatenate all source assets in order
+      if (videoCutPaths.length === 0 && footageAssets.length > 0) {
+        logger.warn(`EDL produced no matching clips — falling back to concatenating all ${footageAssets.length} source assets`);
+        for (const asset of footageAssets) {
+          const path = downloadedPaths.get(asset.id);
+          if (path) videoCutPaths.push(path);
         }
       }
 
