@@ -1,8 +1,9 @@
 import { createSupabaseClient } from "../utils/supabase.js";
-import { findNextAvailableSlot } from "../utils/date.js";
+import { findNextAvailableSlotAdaptive } from "../utils/date.js";
 import { getConfig } from "../config/env.js";
 import { PREFERRED_CONTENT_MIX } from "../config/schedule.js";
 import { logger } from "../utils/logger.js";
+import { activityBus } from "./activity-bus.js";
 import type {
   ContentQueueItem,
   NewContentQueueItem,
@@ -35,7 +36,7 @@ export class ContentQueueService {
         );
       }
 
-      let nextSlot = findNextAvailableSlot(
+      let nextSlot = await findNextAvailableSlotAdaptive(
         item.type,
         existingDates,
         getConfig().POST_TIMEZONE,
@@ -165,6 +166,7 @@ export class ContentQueueService {
     }
 
     logger.info(`Marked item ${id} as posted`, { twitterId, linkedinId });
+    activityBus.emitActivity("post_published", `Item ${id} posted successfully`, { id, twitterId, linkedinId });
   }
 
   async markFailed(id: string, errorMessage: string): Promise<void> {
@@ -175,6 +177,7 @@ export class ContentQueueService {
       retry_count: (item?.retry_count || 0) + 1,
     });
     logger.error(`Marked item ${id} as failed: ${errorMessage}`);
+    activityBus.emitActivity("error", `Item ${id} failed: ${errorMessage}`, { id, errorMessage });
   }
 
   async getItem(id: string): Promise<ContentQueueItem | null> {

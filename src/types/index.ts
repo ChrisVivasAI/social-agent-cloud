@@ -265,6 +265,12 @@ export interface DiscoveredContent {
   updated_at: string;
 }
 
+export interface TimedCaption {
+  word: string;
+  startFrame: number;
+  endFrame: number;
+}
+
 export type RemotionCompositionId =
   | "TechNewsVideo"
   | "QuoteCard"
@@ -290,7 +296,7 @@ export type EpisodeType =
 
 export interface AgentMemoryEntry {
   id: string;
-  category: "feedback" | "performance" | "preference" | "pattern" | "style_guide" | "editing_style";
+  category: "feedback" | "performance" | "preference" | "pattern" | "style_guide" | "editing_style" | "posted_content";
   content: Record<string, unknown>;
   content_text: string;
   embedding?: number[];
@@ -376,6 +382,14 @@ export interface DynamicPromptContext {
 // Video Editor Types
 // ============================================================
 
+export type ProjectType =
+  | "social_clip"       // existing: short social media content
+  | "commercial"        // 30-60s ad/promo with product focus
+  | "short_film"        // 1-5 min narrative with story arc
+  | "series_episode"    // part of a multi-episode series
+  | "music_video"       // visual accompaniment to audio
+  | "documentary";      // informational long-form
+
 export type VideoProjectStatus =
   | "draft"
   | "analyzing"
@@ -386,10 +400,34 @@ export type VideoProjectStatus =
   | "posted"
   | "archived";
 
+export interface CreativeBrief {
+  target_audience?: string;
+  mood?: string;
+  style_references?: string[];
+  model_preferences?: {
+    video_model?: string;      // e.g. "kling-video/v2.1/master"
+    image_model?: string;      // e.g. "fal-ai/flux-2-flex"
+    tts_voice_id?: string;
+  };
+  duration_target_ms?: number;
+  aspect_ratio?: "16:9" | "9:16" | "1:1" | "4:5";
+  brand_guidelines?: {
+    colors?: string[];
+    fonts?: string[];
+    logo_url?: string;
+    watermark_url?: string;
+    tone_of_voice?: string;
+  };
+}
+
 export interface VideoProject {
   id: string;
   title: string;
   goal?: string;
+  project_type: ProjectType;
+  creative_brief?: CreativeBrief;
+  series_id?: string;
+  episode_number?: number;
   status: VideoProjectStatus;
   current_edl?: EDL;
   output_url?: string;
@@ -404,6 +442,30 @@ export interface VideoProject {
   content_queue_id?: string;
   slack_thread_ts?: string;
   slack_channel_id?: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VideoSeries {
+  id: string;
+  title: string;
+  concept: string;
+  project_type: ProjectType;
+  style_guide?: CreativeBrief;
+  continuity: {
+    characters?: Array<{ name: string; description: string; visual_ref?: string }>;
+    recurring_elements?: string[];
+    narrative_arc?: string;
+    tone?: string;
+  };
+  episode_plan?: Array<{
+    episode_number: number;
+    title: string;
+    synopsis: string;
+    project_id?: string;
+    status: "planned" | "in_production" | "completed";
+  }>;
   created_by?: string;
   created_at: string;
   updated_at: string;
@@ -450,14 +512,23 @@ export interface FootageAsset {
 
 export interface EDLTrackItem {
   id: string;
-  type: "video_clip" | "audio" | "text_overlay" | "image_overlay" | "transition";
+  type: "video_clip" | "ai_generated_video" | "audio" | "text_overlay" | "image_overlay" | "transition";
   source_asset_id?: string; // FK to footage_assets
-  source_url?: string; // for generated assets
+  source_url?: string; // for generated/downloaded assets
   start_ms: number; // timeline position
   duration_ms: number;
   // Source clip properties
   in_point_ms?: number; // where to start in source
   out_point_ms?: number; // where to end in source
+  // AI generation config (for ai_generated_video / image_overlay)
+  generation?: {
+    prompt: string;
+    model?: string;               // fal.ai model override
+    reference_image_url?: string;  // for image-to-video or editing
+    negative_prompt?: string;
+    aspect_ratio?: string;
+    duration_seconds?: number;
+  };
   // Properties
   properties: {
     speed?: number;
@@ -569,4 +640,83 @@ export interface ProbeResult {
   has_audio: boolean;
   audio_codec?: string;
   file_size_bytes: number;
+}
+
+// ============================================================
+// fal.ai Model Types
+// ============================================================
+
+export type FalVideoMode = "standard" | "pro";
+export type FalAspectRatio = "16:9" | "9:16" | "1:1";
+export type FalImageModel = "nano-banana-pro" | "flux-2-flex";
+export type FalImageResolution = "1K" | "2K" | "4K";
+export type FalTopazModel =
+  | "Low Resolution V2"
+  | "Standard V2"
+  | "CGI"
+  | "High Fidelity V2"
+  | "Text Refine"
+  | "Recovery"
+  | "Redefine"
+  | "Recovery V2";
+
+export interface FalVideoOptions {
+  duration?: number;
+  aspectRatio?: FalAspectRatio;
+  mode?: FalVideoMode;
+  generateAudio?: boolean;
+  negativePrompt?: string;
+  cfgScale?: number;
+}
+
+export interface FalVideoResult {
+  videoUrl: string;
+  contentType: string;
+  fileSize?: number;
+}
+
+export interface FalImageOptions {
+  model?: FalImageModel;
+  width?: number;
+  height?: number;
+  aspectRatio?: string;
+  resolution?: FalImageResolution;
+  outputFormat?: "jpeg" | "png" | "webp";
+}
+
+export interface FalImageEditOptions {
+  resolution?: FalImageResolution;
+  outputFormat?: "jpeg" | "png" | "webp";
+  seed?: number;
+  numImages?: number;
+}
+
+export interface FalEnhanceOptions {
+  model?: FalTopazModel;
+  upscaleFactor?: number;
+  outputFormat?: "jpeg" | "png";
+  faceEnhancement?: boolean;
+  faceEnhancementStrength?: number;
+}
+
+export interface FalEnhanceResult {
+  imageUrl: string;
+  contentType?: string;
+  fileSize?: number;
+}
+
+// ============================================================
+// Content Critique / Self-Evaluation Types
+// ============================================================
+
+export interface QualityGateResult {
+  gate: "relevance" | "tone" | "length" | "originality" | "cta" | "proofread";
+  pass: boolean;
+  feedback: string;
+}
+
+export interface ContentCritiqueResult {
+  overallPass: boolean;
+  gates: QualityGateResult[];
+  critiqueText: string;
 }

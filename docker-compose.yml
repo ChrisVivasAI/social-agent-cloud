@@ -40,5 +40,22 @@ services:
         reservations:
           memory: 2G
 
+  dashboard:
+    build: ./command-center
+    env_file: .env
+    environment:
+      - NEXT_PUBLIC_SUPABASE_URL=${SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - AGENT_API_URL=http://agent:3002
+      - DASHBOARD_SECRET=${DASHBOARD_SECRET}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - agent
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
 volumes:
   video-tmp:

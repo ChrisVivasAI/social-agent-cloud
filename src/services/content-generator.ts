@@ -1,4 +1,5 @@
 import { generateText } from "../utils/model.js";
+import { activityBus } from "./activity-bus.js";
 import {
   parsePost,
   parseTwitterPost,
@@ -42,6 +43,9 @@ import type {
   ProductShowcaseProps,
   AudiogramProps,
   RemotionCompositionId,
+  ContentCritiqueResult,
+  QualityGateResult,
+  TimedCaption,
 } from "../types/index.js";
 
 export class ContentGeneratorService {
@@ -284,8 +288,22 @@ Return JSON:
   }
 
   /**
+   * Convert word-level timestamps (ms) to frame-based TimedCaptions at given FPS.
+   */
+  private convertToTimedCaptions(
+    words: Array<{ word: string; start: number; end: number }>,
+    fps: number = 30,
+  ): TimedCaption[] {
+    return words.map((w) => ({
+      word: w.word,
+      startFrame: Math.round((w.start / 1000) * fps),
+      endFrame: Math.round((w.end / 1000) * fps),
+    }));
+  }
+
+  /**
    * Shared helper: run TTS + AI image generation in parallel, upload to Supabase.
-   * Returns voiceover URL, TTS duration, and a map of scene index → image URL.
+   * Returns voiceover URL, TTS duration, timed captions, and a map of scene index → image URL.
    */
   private async generateTTSAndImages(
     narrationText: string,
@@ -294,13 +312,15 @@ Return JSON:
     voiceoverUrl?: string;
     ttsDurationMs?: number;
     sceneImageUrls: Map<number, string>;
+    captions: TimedCaption[];
   }> {
     let voiceoverUrl: string | undefined;
     let ttsDurationMs: number | undefined;
     const sceneImageUrls: Map<number, string> = new Map();
+    let captions: TimedCaption[] = [];
 
     if (!this.falService.isAvailable) {
-      return { voiceoverUrl, ttsDurationMs, sceneImageUrls };
+      return { voiceoverUrl, ttsDurationMs, sceneImageUrls, captions };
     }
 
     const supabase = createSupabaseClient();
@@ -368,6 +388,13 @@ Return JSON:
         voiceoverUrl = publicUrl;
         logger.info(`TTS audio uploaded: ${voiceoverUrl}`);
       }
+
+      // Transcribe audio for auto-captions
+      const wordTimestamps = await this.falService.transcribeAudio(buffer);
+      if (wordTimestamps.length > 0) {
+        captions = this.convertToTimedCaptions(wordTimestamps, 30);
+        logger.info(`Auto-captions generated: ${captions.length} words`);
+      }
     } else if (ttsResult.status === "rejected") {
       logger.warn(`TTS generation failed (continuing without voiceover): ${ttsResult.reason}`);
     }
@@ -381,7 +408,7 @@ Return JSON:
       }
     }
 
-    return { voiceoverUrl, ttsDurationMs, sceneImageUrls };
+    return { voiceoverUrl, ttsDurationMs, sceneImageUrls, captions };
   }
 
   /**
@@ -473,6 +500,9 @@ Return JSON:
         brandName: "Tech News",
       };
       props = showcaseProps as unknown as Record<string, unknown>;
+      if (media.captions.length > 0) {
+        (props as Record<string, unknown>).captions = media.captions;
+      }
     } else if (templateId === "AudiogramVideo") {
       const scriptResponse = await generateText(
         GENERATE_VIDEO_SCRIPT_PROMPT,
@@ -544,6 +574,9 @@ Return JSON:
         brandName: "Tech News",
       };
       props = techProps as unknown as Record<string, unknown>;
+      if (media.captions.length > 0) {
+        (props as Record<string, unknown>).captions = media.captions;
+      }
     }
 
     // Step 4: Generate captions
@@ -619,6 +652,7 @@ Return JSON:
   ): Promise<{
     props: ProductShowcaseProps;
     voiceoverUrl?: string;
+    captions: TimedCaption[];
   }> {
     // Generate script
     const scriptResponse = await generateText(
@@ -645,6 +679,7 @@ Return JSON:
     let voiceoverUrl: string | undefined;
     let ttsDurationMs: number | undefined;
     const sceneImageUrls: Map<number, string> = new Map();
+    let productCaptions: TimedCaption[] = [];
 
     if (this.falService.isAvailable) {
       const supabase = createSupabaseClient();
@@ -711,6 +746,13 @@ Return JSON:
           voiceoverUrl = publicUrl;
           logger.info(`ProductShowcase TTS uploaded: ${voiceoverUrl}`);
         }
+
+        // Transcribe audio for auto-captions
+        const wordTimestamps = await this.falService.transcribeAudio(buffer);
+        if (wordTimestamps.length > 0) {
+          productCaptions = this.convertToTimedCaptions(wordTimestamps, 30);
+          logger.info(`ProductShowcase auto-captions: ${productCaptions.length} words`);
+        }
       } else if (ttsResult.status === "rejected") {
         logger.warn(`ProductShowcase TTS failed: ${ttsResult.reason}`);
       }
@@ -760,7 +802,7 @@ Return JSON:
       brandName: "Tech News",
     };
 
-    return { props, voiceoverUrl };
+    return { props, voiceoverUrl, captions: productCaptions };
   }
 
   /**
@@ -860,6 +902,9 @@ Return JSON:
       const result = await this.generateProductShowcaseProps(report, url);
       props = result.props as unknown as Record<string, unknown>;
       voiceoverUrl = result.voiceoverUrl;
+      if (result.captions.length > 0) {
+        (props as Record<string, unknown>).captions = result.captions;
+      }
     } else if (templateId === "AudiogramVideo") {
       // Generate a narration from the report for audiogram
       const scriptResponse = await generateText(
@@ -948,6 +993,9 @@ Return JSON:
       };
 
       props = techProps as unknown as Record<string, unknown>;
+      if (media.captions.length > 0) {
+        (props as Record<string, unknown>).captions = media.captions;
+      }
     }
 
     // Step 4: Generate platform-specific captions
@@ -968,10 +1016,131 @@ Return JSON:
   }
 
   /**
+   * Self-critique: score generated content against quality gates.
+   * Returns structured pass/fail per gate plus overall verdict.
+   */
+  async critiqueContent(
+    draft: string,
+    platform: "twitter" | "linkedin",
+    contentType: string,
+  ): Promise<ContentCritiqueResult> {
+    const platformLimits =
+      platform === "twitter"
+        ? "Max 280 chars, punchy hook, max 2 hashtags"
+        : "~1300 char sweet spot, professional but approachable, line breaks for readability, 3-5 hashtags";
+
+    const response = await generateText(
+      `You are a social media quality reviewer. Evaluate the following draft post against these quality gates.
+Return ONLY valid JSON matching this schema — no markdown, no code fences:
+{
+  "gates": [
+    { "gate": "relevance", "pass": boolean, "feedback": "..." },
+    { "gate": "tone", "pass": boolean, "feedback": "..." },
+    { "gate": "length", "pass": boolean, "feedback": "..." },
+    { "gate": "originality", "pass": boolean, "feedback": "..." },
+    { "gate": "cta", "pass": boolean, "feedback": "..." },
+    { "gate": "proofread", "pass": boolean, "feedback": "..." }
+  ],
+  "critiqueText": "Overall assessment in 1-2 sentences"
+}
+
+Gate definitions:
+- relevance: Does the post align with a tech-focused audience? Is the content on-topic?
+- tone: Does it sound authentic and engaging, not robotic or generic?
+- length: Is it within platform limits? Platform: ${platform}. Constraints: ${platformLimits}
+- originality: Does it offer a fresh angle rather than a generic take?
+- cta: Does it have a clear purpose — engage, inform, or convert?
+- proofread: Grammar, spelling, formatting correct?`,
+      `Content type: ${contentType}\nPlatform: ${platform}\n\nDraft post:\n${draft}`,
+      { maxTokens: 1024, temperature: 0.3 },
+    );
+
+    try {
+      const cleaned = response.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+      const parsed = JSON.parse(cleaned) as {
+        gates: QualityGateResult[];
+        critiqueText: string;
+      };
+      const overallPass = parsed.gates.every((g) => g.pass);
+      return {
+        overallPass,
+        gates: parsed.gates,
+        critiqueText: parsed.critiqueText,
+      };
+    } catch {
+      logger.warn("Failed to parse critique response, treating as pass");
+      return {
+        overallPass: true,
+        gates: [],
+        critiqueText: "Critique parsing failed — skipping gate",
+      };
+    }
+  }
+
+  /**
+   * Refine a draft based on critique feedback.
+   * Returns the improved version.
+   */
+  async refineContent(
+    draft: string,
+    platform: "twitter" | "linkedin",
+    critique: ContentCritiqueResult,
+  ): Promise<string> {
+    const failedGates = critique.gates
+      .filter((g) => !g.pass)
+      .map((g) => `- ${g.gate}: ${g.feedback}`)
+      .join("\n");
+
+    const platformLimits =
+      platform === "twitter"
+        ? "Max 280 characters. Lead with a hook. No more than 2 hashtags."
+        : "~1300 char sweet spot. Professional but not stiff. Use line breaks for readability. 3-5 hashtags at the end.";
+
+    const response = await generateText(
+      `You are a social media content editor. Revise the draft below to address the critique feedback.
+Keep the same overall message but fix the issues identified.
+Platform: ${platform}. Constraints: ${platformLimits}
+Return ONLY the revised post text — no commentary, no quotes, no labels.`,
+      `Original draft:\n${draft}\n\nCritique:\n${critique.critiqueText}\n\nFailed quality gates:\n${failedGates}`,
+      { maxTokens: 1024, temperature: 0.7 },
+    );
+
+    return response.trim();
+  }
+
+  /**
+   * Run the critique-and-refine loop on a post draft.
+   * Critiques the draft; if any gate fails, refines once and returns the improved version.
+   */
+  private async critiqueAndRefine(
+    draft: string,
+    platform: "twitter" | "linkedin",
+    contentType: string,
+  ): Promise<string> {
+    const critique = await this.critiqueContent(draft, platform, contentType);
+
+    if (critique.overallPass) {
+      logger.info(`Critique passed for ${platform} (all gates ok)`);
+      return draft;
+    }
+
+    const failedNames = critique.gates
+      .filter((g) => !g.pass)
+      .map((g) => g.gate)
+      .join(", ");
+    logger.info(`Critique failed gates for ${platform}: ${failedNames}. Refining...`);
+
+    const refined = await this.refineContent(draft, platform, critique);
+    logger.info(`Refinement complete for ${platform} (${refined.length} chars)`);
+    return refined;
+  }
+
+  /**
    * Process a single queue item end-to-end
    */
   async processQueueItem(item: ContentQueueItem): Promise<void> {
     logger.info(`Processing queue item ${item.id} (type: ${item.type})`);
+    activityBus.emitActivity("generation_started", `Generating content for ${item.type} item ${item.id}`, { itemId: item.id, type: item.type });
 
     try {
       await this.queue.updateItem(item.id, { status: "generating" });
@@ -982,6 +1151,14 @@ Return JSON:
             throw new Error("Link item missing content_url");
           }
           const result = await this.generateLinkPost(item.content_url, item.source_text);
+
+          // Self-critique loop: evaluate and refine if needed
+          const [refinedTwitter, refinedLinkedin] = await Promise.all([
+            this.critiqueAndRefine(result.postTwitter, "twitter", "link"),
+            this.critiqueAndRefine(result.postLinkedin, "linkedin", "link"),
+          ]);
+          result.postTwitter = truncateToLimit(refinedTwitter, 280);
+          result.postLinkedin = refinedLinkedin;
 
           // Check if thread generation is needed
           const updates: Record<string, unknown> = {
@@ -1017,10 +1194,17 @@ Return JSON:
             item.type,
             item.source_text || `A ${item.type} to share with our audience`,
           );
+
+          // Self-critique loop
+          const [refinedMediaTw, refinedMediaLi] = await Promise.all([
+            this.critiqueAndRefine(captions.twitter, "twitter", item.type),
+            this.critiqueAndRefine(captions.linkedin, "linkedin", item.type),
+          ]);
+
           await this.queue.updateItem(item.id, {
-            generated_post: captions.twitter,
-            generated_post_twitter: captions.twitter,
-            generated_post_linkedin: captions.linkedin,
+            generated_post: truncateToLimit(refinedMediaTw, 280),
+            generated_post_twitter: truncateToLimit(refinedMediaTw, 280),
+            generated_post_linkedin: refinedMediaLi,
             status: "generated",
           });
           break;
@@ -1042,6 +1226,14 @@ Return JSON:
             if (existingProps.heroImageUrl) {
               (videoResult.props as Record<string, unknown>).heroImageUrl = existingProps.heroImageUrl;
             }
+
+            // Self-critique loop on video captions
+            const [refinedVidTw, refinedVidLi] = await Promise.all([
+              this.critiqueAndRefine(videoResult.twitterCaption, "twitter", "remotion"),
+              this.critiqueAndRefine(videoResult.linkedinCaption, "linkedin", "remotion"),
+            ]);
+            videoResult.twitterCaption = truncateToLimit(refinedVidTw, 280);
+            videoResult.linkedinCaption = refinedVidLi;
 
             const jobId = await this.remotionService.startRender(
               videoResult.templateId,
@@ -1070,6 +1262,14 @@ Return JSON:
               item.remotion_template,
             );
 
+            // Self-critique loop on topic video captions
+            const [refinedTopicTw, refinedTopicLi] = await Promise.all([
+              this.critiqueAndRefine(videoResult.twitterCaption, "twitter", "remotion"),
+              this.critiqueAndRefine(videoResult.linkedinCaption, "linkedin", "remotion"),
+            ]);
+            videoResult.twitterCaption = truncateToLimit(refinedTopicTw, 280);
+            videoResult.linkedinCaption = refinedTopicLi;
+
             const jobId = await this.remotionService.startRender(
               videoResult.templateId,
               videoResult.props,
@@ -1094,10 +1294,17 @@ Return JSON:
               item.remotion_template || "default",
               item.remotion_props || {},
             );
+
+            // Self-critique loop on legacy captions
+            const [refinedLegTw, refinedLegLi] = await Promise.all([
+              this.critiqueAndRefine(captions.twitter, "twitter", "remotion"),
+              this.critiqueAndRefine(captions.linkedin, "linkedin", "remotion"),
+            ]);
+
             await this.queue.updateItem(item.id, {
-              generated_post: captions.twitter,
-              generated_post_twitter: captions.twitter,
-              generated_post_linkedin: captions.linkedin,
+              generated_post: truncateToLimit(refinedLegTw, 280),
+              generated_post_twitter: truncateToLimit(refinedLegTw, 280),
+              generated_post_linkedin: refinedLegLi,
               status: "rendering",
             });
           }
@@ -1109,10 +1316,17 @@ Return JSON:
             throw new Error("Text item missing source_text");
           }
           const textResult = await this.generateTextPost(item.source_text);
+
+          // Self-critique loop
+          const [refinedTextTw, refinedTextLi] = await Promise.all([
+            this.critiqueAndRefine(textResult.twitter, "twitter", "text"),
+            this.critiqueAndRefine(textResult.linkedin, "linkedin", "text"),
+          ]);
+
           await this.queue.updateItem(item.id, {
-            generated_post: textResult.twitter,
-            generated_post_twitter: textResult.twitter,
-            generated_post_linkedin: textResult.linkedin,
+            generated_post: truncateToLimit(refinedTextTw, 280),
+            generated_post_twitter: truncateToLimit(refinedTextTw, 280),
+            generated_post_linkedin: refinedTextLi,
             status: "generated",
           });
           break;
@@ -1128,10 +1342,17 @@ Return JSON:
             `Write social media captions for this video: ${videoEditContext}. ` +
             `The video is an edited compilation. Write engaging captions that match the creative direction.`,
           );
+
+          // Self-critique loop
+          const [refinedEditTw, refinedEditLi] = await Promise.all([
+            this.critiqueAndRefine(videoEditCaptions.twitter, "twitter", "video_edit"),
+            this.critiqueAndRefine(videoEditCaptions.linkedin, "linkedin", "video_edit"),
+          ]);
+
           await this.queue.updateItem(item.id, {
-            generated_post: videoEditCaptions.twitter,
-            generated_post_twitter: videoEditCaptions.twitter,
-            generated_post_linkedin: videoEditCaptions.linkedin,
+            generated_post: truncateToLimit(refinedEditTw, 280),
+            generated_post_twitter: truncateToLimit(refinedEditTw, 280),
+            generated_post_linkedin: refinedEditLi,
             status: "generated",
           });
           break;
@@ -1142,6 +1363,7 @@ Return JSON:
       }
 
       logger.info(`Successfully processed item ${item.id}`);
+      activityBus.emitActivity("generation_completed", `Content generated for ${item.type} item ${item.id}`, { itemId: item.id, type: item.type });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Unknown error";

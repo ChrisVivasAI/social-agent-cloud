@@ -1,5 +1,5 @@
 import "dotenv/config";
-import http from "node:http";
+import express from "express";
 import { validateEnv } from "./config/env.js";
 import { SchedulerService } from "./services/scheduler.js";
 import { SlackListenerService } from "./services/slack-listener.js";
@@ -18,6 +18,10 @@ import { FFmpegService } from "./services/ffmpeg-service.js";
 import { FootageLibraryService } from "./services/footage-library.js";
 import { VideoEditorAgent } from "./services/video-editor-agent.js";
 import { ProactiveAgentService } from "./services/proactive-agent.js";
+import { EngagementMonitorService } from "./services/engagement-monitor.js";
+import { createApiRouter } from "./services/api-router.js";
+import { TwitterClient } from "./clients/twitter.js";
+import { createSupabaseClient } from "./utils/supabase.js";
 import { logger } from "./utils/logger.js";
 
 // Keep the process alive on unhandled errors — log them but don't crash
@@ -56,7 +60,7 @@ async function main() {
     memory || undefined,
     gemini.isAvailable ? gemini : undefined,
   );
-  const postingService = new PostingService();
+  const postingService = new PostingService(memory || undefined);
 
   // 4. Initialize video editor (if Gemini is available)
   let videoEditor: VideoEditorAgent | null = null;
@@ -111,24 +115,44 @@ async function main() {
       );
     }
 
+    // Mount REST API router on the Slack Bolt Express app
+    const expressApp = slackListener.getExpressApp();
+    expressApp.use(express.json());
+    const apiRouter = createApiRouter({
+      contentQueue,
+      slackHandlers,
+      videoEditor,
+      engagementMonitor: null, // wired later below
+      contentGenerator,
+    });
+    expressApp.use("/api", apiRouter);
+    logger.info("REST API router mounted on Slack Express app");
+
     await slackListener.start();
   } else {
     logger.warn(
       "Slack not configured (missing SLACK_SIGNING_SECRET) - Slack listener disabled",
     );
-    // Standalone health server so Docker healthcheck passes even without Slack
+    // Standalone Express app with health endpoint + API router
     const healthPort = config.SLACK_EVENTS_PORT || 3002;
-    const healthServer = http.createServer((_req, res) => {
-      if (_req.url === "/health") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ status: "ok" }));
-      } else {
-        res.writeHead(404);
-        res.end();
-      }
+    const app = express();
+    app.use(express.json());
+
+    app.get("/health", (_req, res) => {
+      res.json({ status: "ok" });
     });
-    healthServer.listen(healthPort, () => {
-      logger.info(`Health endpoint listening on port ${healthPort} (no Slack)`);
+
+    const apiRouter = createApiRouter({
+      contentQueue,
+      slackHandlers: null,
+      videoEditor,
+      engagementMonitor: null, // wired later below
+      contentGenerator,
+    });
+    app.use("/api", apiRouter);
+
+    app.listen(healthPort, () => {
+      logger.info(`Health + API endpoint listening on port ${healthPort} (no Slack)`);
     });
   }
 
@@ -147,6 +171,26 @@ async function main() {
     logger.info("Proactive agent personality enabled");
   }
 
+  // 6b. Initialize engagement monitor (if Twitter is configured)
+  let engagementMonitor: EngagementMonitorService | null = null;
+  try {
+    const twitterClient = TwitterClient.fromEnv();
+    const supabase = createSupabaseClient();
+    engagementMonitor = new EngagementMonitorService(
+      twitterClient.getApi(),
+      supabase,
+    );
+
+    // Wire engagement monitor into the Slack listener for action handlers
+    if (slackListener) {
+      slackListener.setEngagementMonitor(engagementMonitor);
+    }
+
+    logger.info("Engagement monitor enabled");
+  } catch (error) {
+    logger.warn(`Engagement monitor disabled: ${error}`);
+  }
+
   // 7. Start the scheduler (cron jobs)
   const scheduler = new SchedulerService(
     contentQueue,
@@ -160,6 +204,7 @@ async function main() {
     promptBuilder || undefined,
     videoEditor || undefined,
     proactiveAgent || undefined,
+    engagementMonitor || undefined,
   );
   scheduler.start();
 

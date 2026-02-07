@@ -5,15 +5,19 @@ import { truncateToLimit } from "../utils/text.js";
 import { getConfig } from "../config/env.js";
 import { logger } from "../utils/logger.js";
 import { createSupabaseClient } from "../utils/supabase.js";
+import { activityBus } from "./activity-bus.js";
+import type { AgentMemoryService } from "./agent-memory.js";
 import type { ContentQueueItem, PostResult, MediaPayload } from "../types/index.js";
 
 export class PostingService {
   private twitterClient: TwitterClient;
   private linkedInClient: LinkedInClient;
+  private memory: AgentMemoryService | null;
 
-  constructor() {
+  constructor(memory?: AgentMemoryService) {
     this.twitterClient = TwitterClient.fromEnv();
     this.linkedInClient = LinkedInClient.fromEnv();
+    this.memory = memory || null;
   }
 
   /**
@@ -84,7 +88,68 @@ export class PostingService {
     }
 
     result.success = result.errors.length === 0;
+
+    if (result.success) {
+      activityBus.emitActivity("post_published", `Posted ${item.type} to ${platform}`, { itemId: item.id, platform });
+    } else {
+      activityBus.emitActivity("post_failed", `Failed to post ${item.type}: ${result.errors.join("; ")}`, { itemId: item.id });
+    }
+
+    // Index successful posts into agent memory for RAG retrieval
+    if (result.success && this.memory) {
+      this.indexPostedContent(item, result).catch((err) =>
+        logger.warn(`Failed to index posted content for RAG (non-critical): ${err}`),
+      );
+    }
+
     return result;
+  }
+
+  /**
+   * Index a successfully posted item into agent memory for RAG-based
+   * few-shot example retrieval during future content generation.
+   */
+  private async indexPostedContent(
+    item: ContentQueueItem,
+    result: PostResult,
+  ): Promise<void> {
+    if (!this.memory) return;
+
+    const platform = item.platform || "both";
+    const postText = item.generated_post || "";
+    if (!postText) return;
+
+    const platforms: string[] =
+      platform === "both" ? ["twitter", "linkedin"] : [platform];
+
+    for (const plat of platforms) {
+      const platText =
+        plat === "twitter"
+          ? item.generated_post_twitter || postText
+          : item.generated_post_linkedin || postText;
+
+      const externalId =
+        plat === "twitter" ? result.twitterPostId : result.linkedinPostId;
+
+      await this.memory.store({
+        category: "posted_content",
+        content: {
+          post_text: platText,
+          platform: plat,
+          content_type: item.type,
+          queue_item_id: item.id,
+          external_post_id: externalId,
+          posted_at: new Date().toISOString(),
+          is_thread: item.is_thread,
+        },
+        contentText: platText,
+        relevanceTags: [plat, item.type, "posted_content"],
+        platform: plat,
+        sourceId: item.id,
+      });
+    }
+
+    logger.info(`Indexed posted content for RAG: ${item.id}`);
   }
 
   private async postToTwitter(

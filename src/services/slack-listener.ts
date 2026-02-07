@@ -1,5 +1,6 @@
-import { App, LogLevel } from "@slack/bolt";
+import { App, ExpressReceiver, LogLevel } from "@slack/bolt";
 import type { WebClient } from "@slack/web-api";
+import type { Application } from "express";
 import { ContentQueueService } from "./content-queue.js";
 import { SlackHandlerService } from "./slack-handlers.js";
 import { IntakeService } from "./intake-service.js";
@@ -17,14 +18,18 @@ import { logger } from "../utils/logger.js";
 import type { VideoEditorAgent } from "./video-editor-agent.js";
 import type { FootageLibraryService } from "./footage-library.js";
 import type { ContentType, IntakeResult, Platform } from "../types/index.js";
+import type { EngagementMonitorService } from "./engagement-monitor.js";
 
 export class SlackListenerService {
   private app: App;
+  private receiver: ExpressReceiver;
   private contentQueue: ContentQueueService;
   private slackHandlers: SlackHandlerService;
   private intakeService: IntakeService;
   private videoEditor: VideoEditorAgent | null = null;
   private footageLibrary: FootageLibraryService | null = null;
+  private engagementMonitor: EngagementMonitorService | null = null;
+  private engagementDrafts = new Map<string, string>(); // mentionId -> draftReply
   private processedMessages = new Set<string>();
   private dedupeWindowMs = 5 * 60 * 1000; // 5 minutes
 
@@ -34,28 +39,30 @@ export class SlackListenerService {
     intakeService: IntakeService,
     videoEditor?: VideoEditorAgent,
     footageLibrary?: FootageLibraryService,
+    engagementMonitor?: EngagementMonitorService,
   ) {
     this.contentQueue = contentQueue;
     this.slackHandlers = slackHandlers;
     this.intakeService = intakeService;
     this.videoEditor = videoEditor || null;
     this.footageLibrary = footageLibrary || null;
+    this.engagementMonitor = engagementMonitor || null;
     const config = getConfig();
+
+    this.receiver = new ExpressReceiver({
+      signingSecret: config.SLACK_SIGNING_SECRET!,
+      endpoints: "/slack/events",
+    });
+
+    // Add health endpoint on the underlying Express app
+    this.receiver.app.get("/health", (_req, res) => {
+      res.json({ status: "ok" });
+    });
 
     this.app = new App({
       token: config.SLACK_BOT_OAUTH_TOKEN,
-      signingSecret: config.SLACK_SIGNING_SECRET,
+      receiver: this.receiver,
       logLevel: LogLevel.WARN,
-      customRoutes: [
-        {
-          path: "/health",
-          method: ["GET"],
-          handler: (_req, res) => {
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ status: "ok" }));
-          },
-        },
-      ],
     });
 
     this.setupHandlers();
@@ -66,6 +73,18 @@ export class SlackListenerService {
 
   getWebClient(): WebClient {
     return this.app.client;
+  }
+
+  getExpressApp(): Application {
+    return this.receiver.app;
+  }
+
+  setEngagementMonitor(monitor: EngagementMonitorService): void {
+    this.engagementMonitor = monitor;
+  }
+
+  storeEngagementDraft(mentionId: string, draftReply: string): void {
+    this.engagementDrafts.set(mentionId, draftReply);
   }
 
   async start(): Promise<void> {
@@ -707,6 +726,72 @@ export class SlackListenerService {
       // No-op — just acknowledge
     });
 
+    // ─── Engagement monitoring actions ───
+
+    this.app.action("approve_engagement", async ({ action, ack, respond }) => {
+      await ack();
+      try {
+        const mentionId = "value" in action ? action.value : undefined;
+        if (!mentionId || !this.engagementMonitor) return;
+        // Fetch draft from database
+        const draft = await this.engagementMonitor.getDraftReply(mentionId);
+        if (!draft) {
+          logger.warn(`No draft found for mention ${mentionId}`);
+          return;
+        }
+        const tweetId = await this.engagementMonitor.postReply(mentionId, draft);
+        if (tweetId && respond) {
+          await respond({
+            text: `:white_check_mark: Reply posted! Tweet ID: \`${tweetId}\``,
+            replace_original: false,
+          });
+        }
+      } catch (error) {
+        logger.error(`Error handling approve_engagement: ${error}`);
+      }
+    });
+
+    this.app.action("edit_engagement", async ({ action, ack, body, client }) => {
+      await ack();
+      try {
+        const mentionId = "value" in action ? action.value : undefined;
+        if (!mentionId) return;
+        if (!("trigger_id" in body) || !body.trigger_id) return;
+
+        const draft = (this.engagementMonitor
+          ? await this.engagementMonitor.getDraftReply(mentionId)
+          : null) || "";
+        const { buildEditEngagementModal } = await import("../utils/slack-blocks.js");
+
+        await client.views.open({
+          trigger_id: body.trigger_id,
+          view: {
+            type: "modal",
+            callback_id: "edit_engagement_modal",
+            private_metadata: mentionId,
+            title: { type: "plain_text", text: "Edit Reply" },
+            submit: { type: "plain_text", text: "Send Reply" },
+            close: { type: "plain_text", text: "Cancel" },
+            blocks: buildEditEngagementModal(mentionId, draft),
+          },
+        });
+      } catch (error) {
+        logger.error(`Error handling edit_engagement: ${error}`);
+      }
+    });
+
+    this.app.action("dismiss_engagement", async ({ action, ack }) => {
+      await ack();
+      try {
+        const mentionId = "value" in action ? action.value : undefined;
+        if (!mentionId) return;
+        await this.slackHandlers.handleDismissEngagement(mentionId);
+        this.engagementDrafts.delete(mentionId);
+      } catch (error) {
+        logger.error(`Error handling dismiss_engagement: ${error}`);
+      }
+    });
+
     // Video idea actions
     this.app.action("approve_video_idea", async ({ action, ack }) => {
       await ack();
@@ -937,6 +1022,33 @@ export class SlackListenerService {
         await this.slackHandlers.handleRescheduleSubmission(itemId, newDate);
       } catch (error) {
         logger.error(`Error handling reschedule_modal: ${error}`);
+      }
+    });
+
+    // Edit engagement reply modal
+    this.app.view("edit_engagement_modal", async ({ ack, view }) => {
+      await ack();
+      try {
+        const mentionId = view.private_metadata;
+        const values = view.state.values;
+        const replyText =
+          values.engagement_reply?.engagement_reply_input?.value || "";
+
+        if (!replyText || !mentionId || !this.engagementMonitor) return;
+
+        const tweetId = await this.engagementMonitor.postReply(
+          mentionId,
+          replyText,
+        );
+        this.engagementDrafts.delete(mentionId);
+
+        if (tweetId) {
+          logger.info(
+            `Engagement reply posted via edit modal: ${tweetId} for mention ${mentionId}`,
+          );
+        }
+      } catch (error) {
+        logger.error(`Error handling edit_engagement_modal: ${error}`);
       }
     });
   }

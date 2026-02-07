@@ -12,10 +12,13 @@ import { AgentMemoryService } from "./agent-memory.js";
 import { DynamicPromptBuilder } from "./dynamic-prompt-builder.js";
 import { VideoEditorAgent } from "./video-editor-agent.js";
 import { ProactiveAgentService } from "./proactive-agent.js";
+import type { EngagementMonitorService } from "./engagement-monitor.js";
 import { MemoryConsolidationService } from "./memory-consolidation.js";
 import { getConfig } from "../config/env.js";
 import { MAX_RETRY_ATTEMPTS } from "../config/schedule.js";
+import { adaptSchedule, saveAdaptedSchedule } from "../config/schedule.js";
 import { logger } from "../utils/logger.js";
+import { activityBus } from "./activity-bus.js";
 
 export class SchedulerService {
   private tasks: cron.ScheduledTask[] = [];
@@ -24,6 +27,7 @@ export class SchedulerService {
   private contentDiscovery: ContentDiscoveryService;
   private videoEditor: VideoEditorAgent | null = null;
   private proactiveAgent: ProactiveAgentService | null = null;
+  private engagementMonitor: EngagementMonitorService | null = null;
   private consolidation: MemoryConsolidationService | null = null;
 
   constructor(
@@ -38,11 +42,13 @@ export class SchedulerService {
     promptBuilder?: DynamicPromptBuilder,
     videoEditor?: VideoEditorAgent,
     proactiveAgent?: ProactiveAgentService,
+    engagementMonitor?: EngagementMonitorService,
   ) {
     this.metricsCollector = new MetricsCollectorService(gemini, memory, promptBuilder);
     this.contentDiscovery = new ContentDiscoveryService();
     this.videoEditor = videoEditor || null;
     this.proactiveAgent = proactiveAgent || null;
+    this.engagementMonitor = engagementMonitor || null;
 
     // Initialize consolidation pipeline if intelligence layer is available
     if (gemini?.isAvailable && memory && promptBuilder) {
@@ -138,6 +144,13 @@ export class SchedulerService {
       }),
     );
 
+    // Job 11b: Adaptive schedule optimization - Sunday 10:30 AM (after performance analysis)
+    this.tasks.push(
+      cron.schedule("30 10 * * 0", () => this.runAdaptiveScheduling(), {
+        timezone: tz,
+      }),
+    );
+
     // Job 12: Check video project status - every 5 minutes
     if (this.videoEditor) {
       this.tasks.push(
@@ -220,6 +233,17 @@ export class SchedulerService {
       );
     }
 
+    // ─── Engagement Monitoring Jobs ───
+
+    if (this.engagementMonitor && this.slackHandlers) {
+      // Job 22: Check mentions/replies - every 15 min during business hours (Mon-Fri 8AM-8PM)
+      this.tasks.push(
+        cron.schedule("*/15 8-20 * * 1-5", () => this.checkEngagements(), {
+          timezone: tz,
+        }),
+      );
+    }
+
     logger.info(
       `Scheduler started with ${this.tasks.length} cron jobs (timezone: ${tz})`,
     );
@@ -237,6 +261,7 @@ export class SchedulerService {
       if (items.length === 0) return;
 
       logger.info(`Processing ${items.length} pending queue items`);
+      activityBus.emitActivity("cron_executed", `Processing ${items.length} pending queue items`);
 
       for (const item of items) {
         await this.contentGenerator.processQueueItem(item);
@@ -252,6 +277,7 @@ export class SchedulerService {
       if (items.length === 0) return;
 
       logger.info(`Posting ${items.length} due items`);
+      activityBus.emitActivity("cron_executed", `Posting ${items.length} due items`);
 
       for (const item of items) {
         try {
@@ -563,6 +589,19 @@ export class SchedulerService {
     }
   }
 
+  private async runAdaptiveScheduling(): Promise<void> {
+    try {
+      const adaptedSlots = await adaptSchedule();
+      await saveAdaptedSchedule(adaptedSlots);
+      logger.info(
+        `Adaptive scheduling complete: ${adaptedSlots.length} slots — ` +
+        adaptedSlots.map((s) => `${s.label}`).join(", "),
+      );
+    } catch (error) {
+      logger.error(`Error running adaptive scheduling: ${error}`);
+    }
+  }
+
   private async checkVideoProjects(): Promise<void> {
     if (!this.videoEditor) return;
     try {
@@ -661,6 +700,29 @@ export class SchedulerService {
       }
     } catch (error) {
       logger.error(`Error cleaning expired memories: ${error}`);
+    }
+  }
+
+  // ─── Engagement Monitoring Handler ───
+
+  private async checkEngagements(): Promise<void> {
+    if (!this.engagementMonitor || !this.slackHandlers) return;
+    try {
+      const engagements = await this.engagementMonitor.processNewEngagements();
+      if (engagements.length === 0) return;
+
+      const channelId = getConfig().SLACK_CHANNEL_ID;
+      if (!channelId) return;
+
+      for (const engagement of engagements) {
+        await this.slackHandlers.sendEngagementCard(engagement, channelId);
+      }
+
+      logger.info(
+        `Surfaced ${engagements.length} engagement cards to Slack`,
+      );
+    } catch (error) {
+      logger.error(`Error checking engagements: ${error}`);
     }
   }
 
