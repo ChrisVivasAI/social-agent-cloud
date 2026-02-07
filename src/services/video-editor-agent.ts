@@ -240,12 +240,28 @@ export class VideoEditorAgent {
         { assets: footageAnalysis },
       );
 
+      const assetIdList = analyzedAssets.map((a) => a.id).join(", ");
+      const exampleAssetId = analyzedAssets[0]?.id || "ASSET_UUID";
+
       const rawEdl = await this.gemini.generateJSON<EDL>(
         editPrompt,
-        `Create a detailed EDL for this video project. Goal: ${project.goal || "Create an engaging video"}. ` +
-          `Available footage: ${analyzedAssets.length} asset(s). ` +
-          `Output a valid EDL JSON with version, tracks (video, audio, overlays), ` +
-          `total_duration_ms, output_format, narrative_structure, and metadata.`,
+        `CREATIVE GOAL: ${project.goal || "Create an engaging video"}\n\n` +
+          `AVAILABLE FOOTAGE ASSET IDs (use these EXACTLY as source_asset_id values):\n${assetIdList}\n\n` +
+          `EXAMPLE of ONE correct video clip entry:\n` +
+          `{\n` +
+          `  "id": "clip-1",\n` +
+          `  "type": "video_clip",\n` +
+          `  "source_asset_id": "${exampleAssetId}",\n` +
+          `  "start_ms": 0,\n` +
+          `  "duration_ms": 3000,\n` +
+          `  "in_point_ms": 5000,\n` +
+          `  "out_point_ms": 8000,\n` +
+          `  "properties": { "speed": 1 },\n` +
+          `  "narrative_role": "hook",\n` +
+          `  "reasoning": "Strong opening moment"\n` +
+          `}\n\n` +
+          `VOICEOVER: Add an audio item to tracks.audio with type "audio", properties.text containing the narration script, and NO source_url / NO source_asset_id.\n\n` +
+          `All timestamps in MILLISECONDS. Output the complete EDL JSON object.`,
         { model: "pro", maxTokens: 8192, temperature: 0.6 },
       );
 

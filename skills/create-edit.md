@@ -54,24 +54,114 @@ If the edit needs assets that don't exist in the footage:
 
 ## Step 4: Build the EDL
 
-Construct the edit decision list as an ordered array of entries:
+Construct the EDL as a JSON object with three track arrays: `video`, `audio`, and `overlays`. Each item must use the **exact** field names and types shown below.
 
-```
+**DO NOT use any of these wrong field names:** `sequence_number`, `source`, `source_path`, `in_point`, `out_point`, `duration` (without `_ms`), `phase`, `setup`.
+
+**All timestamps are in MILLISECONDS (ms).**
+
+### EDL JSON Structure
+
+```json
 {
-  sequence_number: number,
-  source: "footage" | "generated" | "asset",
-  source_path: string,
-  in_point: timestamp,
-  out_point: timestamp,
-  duration: seconds,
-  phase: "hook" | "setup" | "buildup" | "climax" | "resolution",
-  overlays: [{ type, content, position, timing }],
-  transitions: { in: type, out: type },
-  audio: { source, volume, fade_in, fade_out },
-  effects: [{ type, parameters }],
-  notes: string
+  "version": 1,
+  "tracks": {
+    "video": [
+      {
+        "id": "clip-1",
+        "type": "video_clip",
+        "source_asset_id": "uuid-of-footage-asset",
+        "start_ms": 0,
+        "duration_ms": 3000,
+        "in_point_ms": 15000,
+        "out_point_ms": 18000,
+        "properties": {
+          "speed": 1,
+          "transition_type": "crossfade",
+          "transition_duration_ms": 500
+        },
+        "narrative_role": "hook",
+        "reasoning": "Strong opening visual — grabs attention immediately"
+      },
+      {
+        "id": "clip-2",
+        "type": "video_clip",
+        "source_asset_id": "uuid-of-footage-asset",
+        "start_ms": 3000,
+        "duration_ms": 8000,
+        "in_point_ms": 42000,
+        "out_point_ms": 50000,
+        "properties": { "speed": 1 },
+        "narrative_role": "buildup",
+        "reasoning": "Core content delivery — demonstrates the key topic"
+      },
+      {
+        "id": "clip-3",
+        "type": "video_clip",
+        "source_asset_id": "uuid-of-another-asset",
+        "start_ms": 11000,
+        "duration_ms": 5000,
+        "in_point_ms": 0,
+        "out_point_ms": 5000,
+        "properties": { "speed": 1 },
+        "narrative_role": "climax",
+        "reasoning": "Peak moment — strongest visual payoff"
+      }
+    ],
+    "audio": [
+      {
+        "id": "vo-1",
+        "type": "audio",
+        "start_ms": 0,
+        "duration_ms": 16000,
+        "properties": {
+          "volume": 1,
+          "text": "Write the full voiceover narration script here. This text will be converted to speech via TTS automatically."
+        },
+        "narrative_role": "buildup",
+        "reasoning": "Narration ties the visual story together"
+      }
+    ],
+    "overlays": [
+      {
+        "id": "title-1",
+        "type": "text_overlay",
+        "start_ms": 0,
+        "duration_ms": 3000,
+        "properties": {
+          "text": "Title Text Here",
+          "font_size": 64,
+          "position": { "x": 0.5, "y": 0.2 }
+        },
+        "narrative_role": "hook",
+        "reasoning": "Title card establishes the topic"
+      }
+    ]
+  },
+  "total_duration_ms": 16000,
+  "output_format": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "codec": "h264"
+  },
+  "narrative_structure": [
+    { "role": "hook", "start_ms": 0, "end_ms": 3000 },
+    { "role": "buildup", "start_ms": 3000, "end_ms": 11000 },
+    { "role": "climax", "start_ms": 11000, "end_ms": 16000 }
+  ],
+  "metadata": {}
 }
 ```
+
+### Critical Rules
+
+- **`source_asset_id`** must be a UUID from the footage analysis — copy it exactly as provided
+- **`type`** for video clips must be `"video_clip"` (not `"footage"`, `"source"`, or `"generated"`)
+- **`narrative_role`** valid values: `"hook"`, `"buildup"`, `"climax"`, `"resolution"` (NOT `"setup"`)
+- **Voiceover**: Add an item to `tracks.audio` with `type: "audio"`, NO `source_url`, NO `source_asset_id`, and `properties.text` containing the narration script. The system will generate TTS automatically.
+- **`in_point_ms` / `out_point_ms`**: Where to start/end in the SOURCE clip (not timeline position). `start_ms` is the TIMELINE position.
+- All durations and timestamps are in **milliseconds** — multiply seconds by 1000
 
 ## Step 5: Pacing Check
 
@@ -100,9 +190,4 @@ Final check against platform requirements:
 
 ## Output
 
-Return:
-- `edl`: The complete edit decision list
-- `total_duration`: Final video length
-- `generated_assets`: List of assets that need to be created
-- `render_config`: Remotion composition settings (resolution, fps, codec)
-- `preview_storyboard`: Key frames from each phase for user review
+Return the complete EDL JSON object directly (as shown in Step 4). Do NOT wrap it in another structure — the top-level object should have `version`, `tracks`, `total_duration_ms`, `output_format`, `narrative_structure`, and `metadata`.

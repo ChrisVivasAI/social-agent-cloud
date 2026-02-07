@@ -259,6 +259,70 @@ export class DynamicPromptBuilder {
       sections.push(skill);
     }
 
+    // Belt-and-suspenders: always inject the canonical EDL schema inline
+    // so the correct structure is present even if the skill file is stale
+    sections.push(`
+<edl_json_schema>
+The EDL you output MUST conform to this exact JSON structure. Use these field names EXACTLY.
+
+{
+  "version": 1,
+  "tracks": {
+    "video": [
+      {
+        "id": "clip-1",
+        "type": "video_clip",
+        "source_asset_id": "<UUID from footage analysis>",
+        "start_ms": 0,
+        "duration_ms": 5000,
+        "in_point_ms": 10000,
+        "out_point_ms": 15000,
+        "properties": { "speed": 1 },
+        "narrative_role": "hook",
+        "reasoning": "Why this clip was chosen"
+      }
+    ],
+    "audio": [
+      {
+        "id": "vo-1",
+        "type": "audio",
+        "start_ms": 0,
+        "duration_ms": 15000,
+        "properties": {
+          "volume": 1,
+          "text": "Full voiceover narration script here"
+        },
+        "narrative_role": "buildup",
+        "reasoning": "Narration for the edit"
+      }
+    ],
+    "overlays": [
+      {
+        "id": "title-1",
+        "type": "text_overlay",
+        "start_ms": 0,
+        "duration_ms": 3000,
+        "properties": { "text": "Title", "font_size": 48, "position": { "x": 0.5, "y": 0.2 } },
+        "narrative_role": "hook",
+        "reasoning": "Title card"
+      }
+    ]
+  },
+  "total_duration_ms": 15000,
+  "output_format": { "width": 1080, "height": 1920, "fps": 30, "codec": "h264" },
+  "narrative_structure": [{ "role": "hook", "start_ms": 0, "end_ms": 3000 }],
+  "metadata": {}
+}
+
+CRITICAL RULES:
+- source_asset_id MUST be a UUID copied exactly from the footage analysis
+- type for video clips MUST be "video_clip"
+- narrative_role values: "hook", "buildup", "climax", "resolution" (NEVER "setup")
+- All timestamps in MILLISECONDS
+- Voiceover: add to tracks.audio with type "audio", properties.text set to the script, and NO source_url / NO source_asset_id — TTS is generated automatically
+- DO NOT use: sequence_number, source, source_path, in_point, out_point, duration (without _ms), phase
+</edl_json_schema>`);
+
     // Get editing style preferences (all recent, not just 1)
     const editingStyle = await this.memory.getRecent("editing_style", 5);
     if (editingStyle.length > 0) {
@@ -292,7 +356,7 @@ export class DynamicPromptBuilder {
     }
 
     sections.push(
-      `\n<editing_goal>\n${goal}\n</editing_goal>`,
+      `\n<creative_direction>\nThis is the user's primary creative request — build the entire edit to serve this vision.\n\n${goal}\n</creative_direction>`,
       `\n<footage_analysis>\n${JSON.stringify(footageAnalysis, null, 2)}\n</footage_analysis>`,
     );
 
