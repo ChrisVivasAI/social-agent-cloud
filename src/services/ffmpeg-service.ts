@@ -169,7 +169,7 @@ export class FFmpegService {
       "-i", inputPath,
       "-t", durationSec,
       "-c", "copy",
-      "-avoid_negative_ts", "make_start_zero",
+      "-movflags", "+faststart",
       out,
     ]);
 
