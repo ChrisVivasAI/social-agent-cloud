@@ -11,6 +11,7 @@ import { GeminiService } from "./gemini-service.js";
 import { AgentMemoryService } from "./agent-memory.js";
 import { DynamicPromptBuilder } from "./dynamic-prompt-builder.js";
 import { VideoEditorAgent } from "./video-editor-agent.js";
+import { ProactiveAgentService } from "./proactive-agent.js";
 import { getConfig } from "../config/env.js";
 import { MAX_RETRY_ATTEMPTS } from "../config/schedule.js";
 import { logger } from "../utils/logger.js";
@@ -21,6 +22,7 @@ export class SchedulerService {
   private metricsCollector: MetricsCollectorService;
   private contentDiscovery: ContentDiscoveryService;
   private videoEditor: VideoEditorAgent | null = null;
+  private proactiveAgent: ProactiveAgentService | null = null;
 
   constructor(
     private contentQueue: ContentQueueService,
@@ -33,10 +35,12 @@ export class SchedulerService {
     memory?: AgentMemoryService,
     promptBuilder?: DynamicPromptBuilder,
     videoEditor?: VideoEditorAgent,
+    proactiveAgent?: ProactiveAgentService,
   ) {
     this.metricsCollector = new MetricsCollectorService(gemini, memory, promptBuilder);
     this.contentDiscovery = new ContentDiscoveryService();
     this.videoEditor = videoEditor || null;
+    this.proactiveAgent = proactiveAgent || null;
   }
 
   start(): void {
@@ -152,6 +156,45 @@ export class SchedulerService {
       }),
     );
 
+    // ─── Proactive Agent Jobs ───
+
+    if (this.proactiveAgent) {
+      // Job 15: Morning briefing - daily at 8:30 AM (Mon-Fri)
+      this.tasks.push(
+        cron.schedule("30 8 * * 1-5", () => this.sendMorningBriefing(), {
+          timezone: tz,
+        }),
+      );
+
+      // Job 16: Smart nudge - daily at 3 PM (Mon-Fri)
+      this.tasks.push(
+        cron.schedule("0 15 * * 1-5", () => this.sendSmartNudge(), {
+          timezone: tz,
+        }),
+      );
+
+      // Job 17: Milestone check - every 30 minutes
+      this.tasks.push(
+        cron.schedule("*/30 * * * *", () => this.checkMilestones(), {
+          timezone: tz,
+        }),
+      );
+
+      // Job 18: Trend alert - every 4 hours during business hours
+      this.tasks.push(
+        cron.schedule("0 10,14,18 * * 1-5", () => this.checkTrendAlerts(), {
+          timezone: tz,
+        }),
+      );
+
+      // Job 19: Weekly retro - Friday at 4 PM
+      this.tasks.push(
+        cron.schedule("0 16 * * 5", () => this.sendWeeklyRetro(), {
+          timezone: tz,
+        }),
+      );
+    }
+
     logger.info(
       `Scheduler started with ${this.tasks.length} cron jobs (timezone: ${tz})`,
     );
@@ -209,6 +252,13 @@ export class SchedulerService {
                 item,
                 twitterUrl,
                 result.linkedinPostId,
+              );
+            }
+
+            // Proactive agent celebration
+            if (this.proactiveAgent) {
+              this.proactiveAgent.onPostPublished(item).catch((err) =>
+                logger.warn(`Post celebration failed (non-critical): ${err}`),
               );
             }
           } else {
@@ -518,6 +568,53 @@ export class SchedulerService {
       }
     } catch (error) {
       logger.error(`Error generating weekly video ideas: ${error}`);
+    }
+  }
+
+  // ─── Proactive Agent Handlers ───
+
+  private async sendMorningBriefing(): Promise<void> {
+    if (!this.proactiveAgent) return;
+    try {
+      await this.proactiveAgent.sendMorningBriefing();
+    } catch (error) {
+      logger.error(`Error sending morning briefing: ${error}`);
+    }
+  }
+
+  private async sendSmartNudge(): Promise<void> {
+    if (!this.proactiveAgent) return;
+    try {
+      await this.proactiveAgent.sendSmartNudge();
+    } catch (error) {
+      logger.error(`Error sending smart nudge: ${error}`);
+    }
+  }
+
+  private async checkMilestones(): Promise<void> {
+    if (!this.proactiveAgent) return;
+    try {
+      await this.proactiveAgent.checkMilestones();
+    } catch (error) {
+      logger.error(`Error checking milestones: ${error}`);
+    }
+  }
+
+  private async checkTrendAlerts(): Promise<void> {
+    if (!this.proactiveAgent) return;
+    try {
+      await this.proactiveAgent.checkTrendAlerts();
+    } catch (error) {
+      logger.error(`Error checking trend alerts: ${error}`);
+    }
+  }
+
+  private async sendWeeklyRetro(): Promise<void> {
+    if (!this.proactiveAgent) return;
+    try {
+      await this.proactiveAgent.sendWeeklyRetro();
+    } catch (error) {
+      logger.error(`Error sending weekly retro: ${error}`);
     }
   }
 

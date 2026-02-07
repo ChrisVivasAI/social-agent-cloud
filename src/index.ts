@@ -17,6 +17,7 @@ import { DynamicPromptBuilder } from "./services/dynamic-prompt-builder.js";
 import { FFmpegService } from "./services/ffmpeg-service.js";
 import { FootageLibraryService } from "./services/footage-library.js";
 import { VideoEditorAgent } from "./services/video-editor-agent.js";
+import { ProactiveAgentService } from "./services/proactive-agent.js";
 import { logger } from "./utils/logger.js";
 
 // Keep the process alive on unhandled errors — log them but don't crash
@@ -125,7 +126,22 @@ async function main() {
     });
   }
 
-  // 6. Start the scheduler (cron jobs)
+  // 6. Initialize proactive agent (if Slack + Gemini available)
+  let proactiveAgent: ProactiveAgentService | null = null;
+  if (gemini.isAvailable && memory && promptBuilder && slackListener && config.SLACK_CHANNEL_ID) {
+    const webClient = slackListener.getWebClient();
+    proactiveAgent = new ProactiveAgentService(
+      gemini,
+      memory,
+      promptBuilder,
+      contentQueue,
+      webClient,
+      config.SLACK_CHANNEL_ID,
+    );
+    logger.info("Proactive agent personality enabled");
+  }
+
+  // 7. Start the scheduler (cron jobs)
   const scheduler = new SchedulerService(
     contentQueue,
     contentGenerator,
@@ -137,6 +153,7 @@ async function main() {
     memory || undefined,
     promptBuilder || undefined,
     videoEditor || undefined,
+    proactiveAgent || undefined,
   );
   scheduler.start();
 
