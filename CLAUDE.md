@@ -40,10 +40,10 @@ Two Docker services (`docker-compose.yml`):
 ## GCP Deployment
 
 - **VM**: `social-agent` in `us-central1-b` (e2-medium)
-- **External IP**: `35.184.163.85`
+- **External IP**: `34.171.104.195` (ephemeral — may change on VM restart)
 - **App path on VM**: `/opt/social-agent`
 - **Systemd service**: `social-agent.service`
-- **Slack events URL**: `http://35.184.163.85:3002/slack/events`
+- **Slack events URL**: `http://34.171.104.195:3002/slack/events`
 
 ### Deploy Workflow
 

@@ -240,7 +240,7 @@ export class VideoEditorAgent {
         { assets: footageAnalysis },
       );
 
-      const edl = await this.gemini.generateJSON<EDL>(
+      const rawEdl = await this.gemini.generateJSON<EDL>(
         editPrompt,
         `Create a detailed EDL for this video project. Goal: ${project.goal || "Create an engaging video"}. ` +
           `Available footage: ${analyzedAssets.length} asset(s). ` +
@@ -248,6 +248,18 @@ export class VideoEditorAgent {
           `total_duration_ms, output_format, narrative_structure, and metadata.`,
         { model: "pro", maxTokens: 8192, temperature: 0.6 },
       );
+
+      // Ensure tracks structure is valid (Gemini may omit empty arrays)
+      const edl: EDL = {
+        ...rawEdl,
+        tracks: {
+          video: rawEdl.tracks?.video ?? [],
+          audio: rawEdl.tracks?.audio ?? [],
+          overlays: rawEdl.tracks?.overlays ?? [],
+        },
+        narrative_structure: rawEdl.narrative_structure ?? [],
+        metadata: rawEdl.metadata ?? {},
+      };
 
       // Save EDL to history
       await this.saveEDLVersion(projectId, edl, 1, undefined, "Initial EDL generation");
@@ -478,11 +490,23 @@ export class VideoEditorAgent {
       `Modify the EDL to address the feedback. Keep changes minimal and targeted. ` +
       `Increment the version to ${newVersion}. Output the full modified EDL as JSON.`;
 
-    const modifiedEDL = await this.gemini.generateJSON<EDL>(
+    const rawModifiedEDL = await this.gemini.generateJSON<EDL>(
       feedbackPrompt,
       `Apply this feedback to the EDL: "${feedback}"`,
       { model: "pro", maxTokens: 8192, temperature: 0.5 },
     );
+
+    // Ensure tracks structure is valid
+    const modifiedEDL: EDL = {
+      ...rawModifiedEDL,
+      tracks: {
+        video: rawModifiedEDL.tracks?.video ?? [],
+        audio: rawModifiedEDL.tracks?.audio ?? [],
+        overlays: rawModifiedEDL.tracks?.overlays ?? [],
+      },
+      narrative_structure: rawModifiedEDL.narrative_structure ?? [],
+      metadata: rawModifiedEDL.metadata ?? {},
+    };
 
     // Ensure version is correct
     modifiedEDL.version = newVersion;
