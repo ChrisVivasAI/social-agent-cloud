@@ -282,6 +282,18 @@ export class SlackListenerService {
   // ─── Slash commands ───
 
   private setupSlashCommands(): void {
+    // /ping — simple health check
+    this.app.command("/ping", async ({ ack, respond }) => {
+      await ack();
+      const uptime = process.uptime();
+      const hours = Math.floor(uptime / 3600);
+      const minutes = Math.floor((uptime % 3600) / 60);
+      await respond({
+        text: `:white_check_mark: Agent is alive! Uptime: ${hours}h ${minutes}m`,
+        response_type: "ephemeral",
+      });
+    });
+
     // /queue [status]
     this.app.command("/queue", async ({ command, ack, respond }) => {
       await ack();
@@ -735,6 +747,48 @@ export class SlackListenerService {
       } catch (error) {
         logger.error(`Error handling schedule_next: ${error}`);
       }
+    });
+
+    // ─── Proactive agent actions ───
+
+    this.app.action("proactive_view_stats", async ({ ack }) => {
+      await ack();
+      // Stats view — acknowledged, no further action needed
+    });
+
+    this.app.action(/^proactive_review_/, async ({ action, ack }) => {
+      await ack();
+      try {
+        const itemId = "value" in action ? action.value : undefined;
+        if (!itemId) return;
+        // Navigate user to the review card — just approve for now
+        await this.slackHandlers.handleApprove(itemId);
+      } catch (error) {
+        logger.error(`Error handling proactive_review: ${error}`);
+      }
+    });
+
+    this.app.action("proactive_create_from_trend", async ({ action, ack, respond }) => {
+      await ack();
+      try {
+        const topic = "value" in action ? (action.value as string) : undefined;
+        if (!topic) return;
+        const item = await this.contentQueue.addItem({
+          type: "text",
+          source_text: topic,
+        });
+        await respond({
+          text: `:rocket: Queued trend topic for content generation: \`${item.id.substring(0, 8)}\``,
+          replace_original: false,
+        });
+      } catch (error) {
+        logger.error(`Error handling proactive_create_from_trend: ${error}`);
+      }
+    });
+
+    this.app.action("proactive_dismiss_trend", async ({ ack }) => {
+      await ack();
+      // Dismissed — no action needed
     });
 
     // Handle overflow menu from queue list
