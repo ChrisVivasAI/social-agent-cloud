@@ -14,6 +14,8 @@ import {
   buildRescheduleModal,
 } from "../utils/slack-blocks.js";
 import { logger } from "../utils/logger.js";
+import type { VideoEditorAgent } from "./video-editor-agent.js";
+import type { FootageLibraryService } from "./footage-library.js";
 import type { ContentType, IntakeResult, Platform } from "../types/index.js";
 
 export class SlackListenerService {
@@ -21,6 +23,8 @@ export class SlackListenerService {
   private contentQueue: ContentQueueService;
   private slackHandlers: SlackHandlerService;
   private intakeService: IntakeService;
+  private videoEditor: VideoEditorAgent | null = null;
+  private footageLibrary: FootageLibraryService | null = null;
   private processedMessages = new Set<string>();
   private dedupeWindowMs = 5 * 60 * 1000; // 5 minutes
 
@@ -28,10 +32,14 @@ export class SlackListenerService {
     contentQueue: ContentQueueService,
     slackHandlers: SlackHandlerService,
     intakeService: IntakeService,
+    videoEditor?: VideoEditorAgent,
+    footageLibrary?: FootageLibraryService,
   ) {
     this.contentQueue = contentQueue;
     this.slackHandlers = slackHandlers;
     this.intakeService = intakeService;
+    this.videoEditor = videoEditor || null;
+    this.footageLibrary = footageLibrary || null;
     const config = getConfig();
 
     this.app = new App({
@@ -190,18 +198,81 @@ export class SlackListenerService {
           }
 
           case "video_edit": {
-            // Video editing request — ingest footage and create a video project
-            if (files && files.length > 0) {
+            // Video editing request — group ALL files into a single video project
+            if (this.videoEditor && this.footageLibrary && files && files.length > 0) {
+              const videoFiles = files.filter((f: any) => {
+                const mime = (f.mimetype as string) || "";
+                return mime.startsWith("video/");
+              });
+
+              if (videoFiles.length > 0) {
+                const creativeGoal = intake.creativeDirection || text || "Create an engaging video";
+
+                // 1. Upload all video files and ingest as footage assets
+                const assetIds: string[] = [];
+                for (const file of videoFiles) {
+                  const mediaUrl = await this.transferFileToSupabase(file);
+                  if (!mediaUrl) continue;
+                  try {
+                    const asset = await this.footageLibrary.ingestFromUrl(mediaUrl, "slack_upload", userId);
+                    assetIds.push(asset.id);
+                    logger.info(`Ingested footage asset: ${(file as any).name} -> ${asset.id}`);
+                  } catch (err) {
+                    logger.warn(`Failed to ingest footage ${(file as any).name}: ${err}`);
+                  }
+                }
+
+                if (assetIds.length > 0) {
+                  // 2. Create a single video project with all footage
+                  const project = await this.videoEditor.createProject(
+                    `Slack edit: ${creativeGoal.substring(0, 80)}`,
+                    creativeGoal,
+                    userId,
+                  );
+                  await this.videoEditor.addFootage(project.id, assetIds);
+                  logger.info(`Created video project ${project.id} with ${assetIds.length} assets`);
+
+                  // 3. Create ONE queue item linked to this project
+                  const item = await this.contentQueue.addItem({
+                    type: "video_edit",
+                    source_text: creativeGoal,
+                    platform: intake.platform,
+                    priority: intake.priority,
+                    scheduled_for: scheduledFor,
+                    slack_channel_id: channelId,
+                    slack_message_ts: messageTs,
+                    slack_user_id: userId,
+                    video_project_id: project.id,
+                  });
+                  logger.info(`Queued video_edit project from Slack -> ${item.id} (project: ${project.id})`);
+                  itemsQueued++;
+
+                  // 4. Kick off video processing in the background
+                  this.videoEditor.processProject(project.id, async (msg) => {
+                    logger.info(`[VideoProject ${project.id}] ${msg}`);
+                  }).then(async (finishedProject) => {
+                    // Update queue item with rendered video output
+                    await this.contentQueue.updateItem(item.id, {
+                      media_url: finishedProject.output_url || undefined,
+                      media_mime_type: "video/mp4",
+                      status: "generated",
+                    });
+                    logger.info(`Video project ${project.id} rendered, queue item ${item.id} updated`);
+                  }).catch((err) => {
+                    logger.error(`Video project ${project.id} failed: ${err}`);
+                    this.contentQueue.markFailed(item.id, `Video editing failed: ${err}`).catch(() => {});
+                  });
+                }
+              }
+            } else if (files && files.length > 0) {
+              // Fallback: no video editor available, queue individually
               for (const file of files) {
                 const contentType = this.classifyFile(file);
                 if (contentType !== "video") continue;
-
                 const mediaUrl = await this.transferFileToSupabase(file);
                 if (!mediaUrl) continue;
-
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const f = file as any;
-                const item = await this.contentQueue.addItem({
+                await this.contentQueue.addItem({
                   type: "video_edit",
                   media_url: mediaUrl,
                   media_mime_type: f.mimetype || undefined,
@@ -213,7 +284,6 @@ export class SlackListenerService {
                   slack_message_ts: messageTs,
                   slack_user_id: userId,
                 });
-                logger.info(`Queued video_edit from Slack: ${f.name} -> ${item.id}`);
                 itemsQueued++;
               }
             }

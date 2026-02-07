@@ -1119,10 +1119,19 @@ Return JSON:
         }
 
         case "video_edit": {
-          // Video edit items are handled by the VideoEditorAgent
-          // Just mark as generated so the video editor pipeline picks it up
-          logger.info(`Video edit item ${item.id} — delegating to video editor pipeline`);
+          // Video edit items: generate captions for the edited video.
+          // The video rendering itself is handled by VideoEditorAgent (kicked off by slack-listener).
+          // By the time this runs, the item may already have a media_url from the rendered project.
+          logger.info(`Video edit item ${item.id} — generating captions`);
+          const videoEditContext = item.source_text || "Edited video content";
+          const videoEditCaptions = await this.generateTextPost(
+            `Write social media captions for this video: ${videoEditContext}. ` +
+            `The video is an edited compilation. Write engaging captions that match the creative direction.`,
+          );
           await this.queue.updateItem(item.id, {
+            generated_post: videoEditCaptions.twitter,
+            generated_post_twitter: videoEditCaptions.twitter,
+            generated_post_linkedin: videoEditCaptions.linkedin,
             status: "generated",
           });
           break;

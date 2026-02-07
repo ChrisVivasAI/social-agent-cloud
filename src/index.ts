@@ -92,7 +92,13 @@ async function main() {
     const intakeService = new IntakeService(gemini.isAvailable ? gemini : undefined);
 
     // Create listener (this creates the Bolt app + exposes WebClient)
-    slackListener = new SlackListenerService(contentQueue, slackHandlers, intakeService);
+    slackListener = new SlackListenerService(
+      contentQueue,
+      slackHandlers,
+      intakeService,
+      videoEditor || undefined,
+      footageLibrary,
+    );
 
     // Wire up WebClient from the Bolt app to handler and notification services
     const webClient = slackListener.getWebClient();

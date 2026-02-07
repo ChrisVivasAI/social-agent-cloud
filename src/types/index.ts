@@ -71,6 +71,7 @@ export interface NewContentQueueItem {
   slack_channel_id?: string;
   slack_message_ts?: string;
   slack_user_id?: string;
+  video_project_id?: string;
 }
 
 export interface PostResult {
