@@ -23,6 +23,7 @@ export class SlackListenerService {
   private intakeService: IntakeService;
   private processedMessages = new Set<string>();
   private dedupeWindowMs = 5 * 60 * 1000; // 5 minutes
+  private startedAt = new Date();
 
   constructor(
     contentQueue: ContentQueueService,
@@ -303,6 +304,47 @@ export class SlackListenerService {
         });
       } catch (error) {
         logger.error(`Error handling /schedule: ${error}`);
+        await respond({ text: `Error: ${error}`, response_type: "ephemeral" });
+      }
+    });
+
+    // /ping — quick health check with uptime and stats
+    this.app.command("/ping", async ({ ack, respond }) => {
+      await ack();
+      try {
+        const now = new Date();
+        const upMs = now.getTime() - this.startedAt.getTime();
+        const hours = Math.floor(upMs / 3_600_000);
+        const mins = Math.floor((upMs % 3_600_000) / 60_000);
+        const uptime = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+
+        const summary = await this.contentQueue.getQueueSummary();
+        const next = summary.upcoming[0];
+        const nextText = next
+          ? `${next.type} on ${new Date(next.scheduled_for!).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
+          : "Nothing scheduled";
+
+        await respond({
+          blocks: [
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: [
+                  `:satellite: *Social Agent is alive!*`,
+                  `*Uptime:* ${uptime}`,
+                  `*Next post:* ${nextText}`,
+                  `*Queue:* ${summary.ready} ready · ${summary.awaiting_approval} awaiting approval · ${summary.pending} pending`,
+                  `*Today:* ${summary.posted_today} posted · ${summary.failed} failed`,
+                ].join("\n"),
+              },
+            },
+          ],
+          text: "Pong!",
+          response_type: "ephemeral",
+        });
+      } catch (error) {
+        logger.error(`Error handling /ping: ${error}`);
         await respond({ text: `Error: ${error}`, response_type: "ephemeral" });
       }
     });
