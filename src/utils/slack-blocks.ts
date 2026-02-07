@@ -3,6 +3,8 @@ import type {
   ContentQueueItem,
   QueueSummary,
   DiscoveredContent,
+  VideoIdea,
+  VideoProject,
 } from "../types/index.js";
 
 type Block = KnownBlock;
@@ -981,6 +983,189 @@ export function buildDiscoveryCard(item: DiscoveredContent): Block[] {
         },
       ],
     },
+  ];
+}
+
+export function buildVideoIdeaCard(idea: VideoIdea): Block[] {
+  return [
+    {
+      type: "header",
+      text: { type: "plain_text", text: "Video Idea", emoji: true },
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*${truncate(idea.concept, 200)}*`,
+      },
+    },
+    ...(idea.rationale
+      ? [
+          {
+            type: "section" as const,
+            text: {
+              type: "mrkdwn" as const,
+              text: truncate(idea.rationale, 300),
+            },
+          },
+        ]
+      : []),
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: [
+            idea.target_platform && `:movie_camera: Platform: ${idea.target_platform}`,
+            idea.estimated_duration_sec && `Duration: ~${idea.estimated_duration_sec}s`,
+            idea.style_notes && `Style: ${truncate(idea.style_notes, 50)}`,
+          ]
+            .filter(Boolean)
+            .join(" | "),
+        },
+      ],
+    },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Approve & Produce", emoji: true },
+          style: "primary",
+          action_id: "approve_video_idea",
+          value: idea.id,
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Critique", emoji: true },
+          action_id: "critique_video_idea",
+          value: idea.id,
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Reject", emoji: true },
+          style: "danger",
+          action_id: "reject_video_idea",
+          value: idea.id,
+        },
+      ],
+    },
+  ];
+}
+
+export function buildVideoReviewCard(project: VideoProject): Block[] {
+  const blocks: Block[] = [
+    {
+      type: "header",
+      text: { type: "plain_text", text: "Video Ready for Review", emoji: true },
+    },
+    {
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*Title:* ${project.title}` },
+        { type: "mrkdwn", text: `*Status:* ${project.status}` },
+        {
+          type: "mrkdwn",
+          text: `*ID:* \`${project.id.substring(0, 8)}\``,
+        },
+      ],
+    },
+  ];
+
+  if (project.goal) {
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `*Goal:* ${truncate(project.goal, 200)}` },
+    });
+  }
+
+  if (project.output_url) {
+    blocks.push({
+      type: "context",
+      elements: [
+        { type: "mrkdwn", text: `:movie_camera: <${project.output_url}|Watch video>` },
+      ],
+    });
+  }
+
+  blocks.push(
+    { type: "divider" },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Approve", emoji: true },
+          style: "primary",
+          action_id: "approve_video_project",
+          value: project.id,
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Request Changes", emoji: true },
+          action_id: "feedback_video_project",
+          value: project.id,
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Reject", emoji: true },
+          style: "danger",
+          action_id: "reject_video_project",
+          value: project.id,
+        },
+      ],
+    },
+  );
+
+  return blocks;
+}
+
+export function buildVideoStatusCard(project: VideoProject): Block[] {
+  const statusMap: Record<string, string> = {
+    draft: ":pencil:",
+    analyzing: ":mag:",
+    editing: ":scissors:",
+    rendering: ":movie_camera:",
+    review: ":eyes:",
+    approved: ":white_check_mark:",
+    posted: ":tada:",
+    archived: ":file_folder:",
+  };
+  const emoji = statusMap[project.status] || ":grey_question:";
+
+  return [
+    {
+      type: "header",
+      text: { type: "plain_text", text: "Video Project Status", emoji: true },
+    },
+    {
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*Title:* ${project.title}` },
+        { type: "mrkdwn", text: `${emoji} *Status:* ${project.status}` },
+        {
+          type: "mrkdwn",
+          text: `*Footage:* ${project.footage_asset_ids.length} clips`,
+        },
+        {
+          type: "mrkdwn",
+          text: `*Revisions:* ${project.feedback_history.length}`,
+        },
+      ],
+    },
+    ...(project.output_url
+      ? [
+          {
+            type: "context" as const,
+            elements: [
+              {
+                type: "mrkdwn" as const,
+                text: `:movie_camera: <${project.output_url}|Watch latest render>`,
+              },
+            ],
+          },
+        ]
+      : []),
   ];
 }
 

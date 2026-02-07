@@ -42,6 +42,23 @@ interface EnvConfig {
   AUTO_APPROVE_ENABLED: boolean;
   AUTO_APPROVE_TYPES: string[]; // content types that skip approval
 
+  // Vertex AI / Gemini
+  GOOGLE_CLOUD_PROJECT?: string;
+  GOOGLE_CLOUD_LOCATION: string;
+  GEMINI_PRO_MODEL: string;
+  GEMINI_FLASH_MODEL: string;
+
+  // Video Editor
+  FFMPEG_PATH: string;
+  FFPROBE_PATH: string;
+  VIDEO_TEMP_DIR: string;
+  MAX_VIDEO_DURATION_SEC: number;
+
+  // Memory
+  MEMORY_VECTOR_WEIGHT: number;
+  MEMORY_DEFAULT_LIMIT: number;
+  MEMORY_EMBEDDING_MODEL: string;
+
   // Debug
   DRY_RUN: boolean;
   LOG_LEVEL: string;
@@ -98,6 +115,23 @@ export function validateEnv(): EnvConfig {
       .split(",")
       .map((t) => t.trim())
       .filter(Boolean),
+    // Vertex AI / Gemini
+    GOOGLE_CLOUD_PROJECT: process.env.GOOGLE_CLOUD_PROJECT || undefined,
+    GOOGLE_CLOUD_LOCATION: getOptionalEnv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+    GEMINI_PRO_MODEL: getOptionalEnv("GEMINI_PRO_MODEL", "gemini-2.5-pro"),
+    GEMINI_FLASH_MODEL: getOptionalEnv("GEMINI_FLASH_MODEL", "gemini-2.5-flash"),
+
+    // Video Editor
+    FFMPEG_PATH: getOptionalEnv("FFMPEG_PATH", "ffmpeg"),
+    FFPROBE_PATH: getOptionalEnv("FFPROBE_PATH", "ffprobe"),
+    VIDEO_TEMP_DIR: getOptionalEnv("VIDEO_TEMP_DIR", "/tmp/video-editor"),
+    MAX_VIDEO_DURATION_SEC: parseInt(getOptionalEnv("MAX_VIDEO_DURATION_SEC", "300"), 10),
+
+    // Memory
+    MEMORY_VECTOR_WEIGHT: parseFloat(getOptionalEnv("MEMORY_VECTOR_WEIGHT", "0.6")),
+    MEMORY_DEFAULT_LIMIT: parseInt(getOptionalEnv("MEMORY_DEFAULT_LIMIT", "10"), 10),
+    MEMORY_EMBEDDING_MODEL: getOptionalEnv("MEMORY_EMBEDDING_MODEL", "text-embedding-004"),
+
     DRY_RUN: process.env.DRY_RUN === "true",
     LOG_LEVEL: getOptionalEnv("LOG_LEVEL", "info"),
   };

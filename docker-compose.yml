@@ -11,6 +11,14 @@ services:
     depends_on:
       - remotion
     restart: unless-stopped
+    volumes:
+      - video-tmp:/tmp/video-editor
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3002/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 30s
@@ -31,3 +39,6 @@ services:
           memory: 4G
         reservations:
           memory: 2G
+
+volumes:
+  video-tmp:

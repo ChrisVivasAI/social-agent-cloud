@@ -16,6 +16,16 @@ import {
   audiogramSchema,
   calculateAudiogramMetadata,
 } from "./audiogram/index.js";
+import {
+  StoryVideo,
+  storyVideoSchema,
+  calculateStoryVideoMetadata,
+} from "./story-video/index.js";
+import {
+  ShortFormVideo,
+  shortFormVideoSchema,
+  calculateShortFormMetadata,
+} from "./short-form/index.js";
 
 export const RemotionRoot: React.FC = () => {
   return (
@@ -136,6 +146,53 @@ export const RemotionRoot: React.FC = () => {
           backgroundColor: "#141413",
           brandName: "Tech News",
           waveformSeed: 42,
+        }}
+      />
+      <Composition
+        id="StoryVideo"
+        component={StoryVideo}
+        durationInFrames={600}
+        fps={30}
+        width={1080}
+        height={1080}
+        schema={storyVideoSchema}
+        calculateMetadata={calculateStoryVideoMetadata}
+        defaultProps={{
+          title: "Story Title",
+          scenes: [
+            { type: "full_bleed" as const, text: "Opening scene", subtext: "Setting the stage", durationInFrames: 120 },
+            { type: "lower_third" as const, text: "Key moment", subtext: "Important context", durationInFrames: 120 },
+            { type: "b_roll" as const, text: "Supporting visuals", durationInFrames: 120 },
+            { type: "split_screen" as const, text: "Comparison", subtext: "Before and after", durationInFrames: 120 },
+            { type: "transition" as const, text: "The End", durationInFrames: 60 },
+          ],
+          voiceoverUrl: undefined,
+          accentColor: "#d97757",
+          backgroundColor: "#141413",
+          brandName: "Story",
+        }}
+      />
+      <Composition
+        id="ShortFormVideo"
+        component={ShortFormVideo}
+        durationInFrames={300}
+        fps={30}
+        width={1080}
+        height={1920}
+        schema={shortFormVideoSchema}
+        calculateMetadata={calculateShortFormMetadata}
+        defaultProps={{
+          title: "Short Form Video",
+          captionSegments: [
+            { text: "This is the first caption segment", startFrame: 0, endFrame: 60 },
+            { text: "Here comes the second part", startFrame: 60, endFrame: 120 },
+            { text: "And the final takeaway", startFrame: 120, endFrame: 180 },
+          ],
+          mediaUrl: undefined,
+          voiceoverUrl: undefined,
+          accentColor: "#d97757",
+          backgroundColor: "#141413",
+          brandName: "",
         }}
       />
     </>

@@ -58,3 +58,22 @@ export const MAX_RETRY_ATTEMPTS = 3;
 
 // Content types that match "image" or "video" slots interchangeably
 export const MEDIA_CONTENT_TYPES: ContentType[] = ["image", "video"];
+
+// Adaptive scheduling configuration
+export const ADAPTIVE_SCHEDULING = {
+  // Minimum data points before adjusting schedule
+  MIN_POSTS_FOR_ADAPTATION: 20,
+  // How much weight to give recent performance vs defaults
+  ADAPTATION_STRENGTH: 0.5,
+  // Maximum slots per week when queue is full
+  MAX_WEEKLY_SLOTS: 8,
+  // When queue exceeds this, add extra slots
+  QUEUE_OVERFLOW_THRESHOLD: 6,
+  // Analyze last N days for timing optimization
+  ANALYSIS_WINDOW_DAYS: 30,
+};
+
+// Get mutable copy of posting slots (for adaptive scheduling to modify)
+export function getPostingSlots(): PostingSlot[] {
+  return DEFAULT_POSTING_SLOTS.map((slot) => ({ ...slot }));
+}

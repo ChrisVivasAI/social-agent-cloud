@@ -2,16 +2,30 @@ import { generateText } from "../utils/model.js";
 import { parseIntake } from "../utils/text.js";
 import { INTAKE_PROMPT } from "../prompts/index.js";
 import { extractUrlsFromSlackText } from "../utils/urls.js";
+import { GeminiService } from "./gemini-service.js";
 import { logger } from "../utils/logger.js";
 import type { IntakeResult, ContentType } from "../types/index.js";
 
 export class IntakeService {
+  private gemini: GeminiService | null;
+
+  constructor(gemini?: GeminiService) {
+    this.gemini = gemini || null;
+  }
+
   async analyzeMessage(
     text: string,
     hasFiles: boolean,
     fileTypes: string[],
+    imageBuffers?: Buffer[],
   ): Promise<IntakeResult> {
     try {
+      // If images are attached and Gemini is available, analyze them visually
+      let imageContext = "";
+      if (imageBuffers?.length && this.gemini?.isAvailable) {
+        imageContext = await this.analyzeImages(imageBuffers);
+      }
+
       const prompt = INTAKE_PROMPT.replace(
         "{{TODAY_DATE}}",
         new Date().toISOString().split("T")[0],
@@ -21,9 +35,13 @@ export class IntakeService {
         ? `\n\nAttached files: ${fileTypes.join(", ")}`
         : "";
 
+      const visionContext = imageContext
+        ? `\n\nImage analysis (from Gemini Vision):\n${imageContext}`
+        : "";
+
       const response = await generateText(
         prompt,
-        `Slack message: "${text}"${fileContext}`,
+        `Slack message: "${text}"${fileContext}${visionContext}`,
         { maxTokens: 512, temperature: 0.1 },
       );
 
@@ -53,10 +71,48 @@ export class IntakeService {
         creativeDirection: (parsed.creativeDirection as string) || null,
         priority: this.validatePriority(parsed.priority as number),
         summary: (parsed.summary as string) || "Message queued for posting",
+        imageAnalysis: imageContext || undefined,
       };
     } catch (error) {
       logger.error(`IntakeService.analyzeMessage failed: ${error}`);
       return this.fallbackClassification(text, hasFiles, fileTypes);
+    }
+  }
+
+  /**
+   * Analyze uploaded images using Gemini 3 Flash vision.
+   * Returns a text description of the image content for better classification and caption generation.
+   */
+  private async analyzeImages(imageBuffers: Buffer[]): Promise<string> {
+    if (!this.gemini?.isAvailable) return "";
+
+    try {
+      const inputs = imageBuffers.slice(0, 5).map((buf) => ({
+        type: "image" as const,
+        data: buf,
+        mimeType: "image/png",
+        mediaResolution: "media_resolution_medium" as const,
+      }));
+
+      const result = await this.gemini.analyzeVision(
+        `Analyze these images that a user wants to post on social media.
+For each image, describe:
+1. What the image shows (subject, setting, action)
+2. Any text, logos, or branding visible
+3. The mood/tone of the image
+4. What type of social media post this would work best for
+5. Suggested caption themes
+
+Be concise — this will be used to help classify and generate captions for the post.`,
+        inputs,
+        { model: "flash", maxTokens: 1024, thinkingLevel: "low" },
+      );
+
+      logger.info(`Vision analysis complete for ${imageBuffers.length} image(s)`);
+      return result;
+    } catch (err) {
+      logger.warn(`Image vision analysis failed: ${err}`);
+      return "";
     }
   }
 
@@ -73,9 +129,17 @@ export class IntakeService {
       lower.includes("generate a video") ||
       lower.includes("make a video") ||
       lower.includes("create a video");
+    const wantsVideoEdit =
+      lower.includes("edit this") ||
+      lower.includes("trim this") ||
+      lower.includes("cut the") ||
+      lower.includes("add music") ||
+      lower.includes("edit the video");
 
     let contentType: ContentType = "text";
-    if (wantsVideo) {
+    if (wantsVideoEdit && hasFiles) {
+      contentType = "video_edit";
+    } else if (wantsVideo) {
       contentType = "remotion";
     } else if (hasUrl) {
       contentType = "link";
@@ -103,7 +167,7 @@ export class IntakeService {
     hasFiles: boolean,
     fileTypes: string[],
   ): ContentType {
-    const valid: ContentType[] = ["link", "image", "video", "remotion", "text"];
+    const valid: ContentType[] = ["link", "image", "video", "remotion", "text", "video_edit"];
     if (valid.includes(value as ContentType)) return value as ContentType;
 
     // Fall back to detection

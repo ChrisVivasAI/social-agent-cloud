@@ -23,7 +23,6 @@ export class SlackListenerService {
   private intakeService: IntakeService;
   private processedMessages = new Set<string>();
   private dedupeWindowMs = 5 * 60 * 1000; // 5 minutes
-  private startedAt = new Date();
 
   constructor(
     contentQueue: ContentQueueService,
@@ -190,6 +189,37 @@ export class SlackListenerService {
             break;
           }
 
+          case "video_edit": {
+            // Video editing request — ingest footage and create a video project
+            if (files && files.length > 0) {
+              for (const file of files) {
+                const contentType = this.classifyFile(file);
+                if (contentType !== "video") continue;
+
+                const mediaUrl = await this.transferFileToSupabase(file);
+                if (!mediaUrl) continue;
+
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const f = file as any;
+                const item = await this.contentQueue.addItem({
+                  type: "video_edit",
+                  media_url: mediaUrl,
+                  media_mime_type: f.mimetype || undefined,
+                  source_text: intake.creativeDirection || text || f.title || f.name || undefined,
+                  platform: intake.platform,
+                  priority: intake.priority,
+                  scheduled_for: scheduledFor,
+                  slack_channel_id: channelId,
+                  slack_message_ts: messageTs,
+                  slack_user_id: userId,
+                });
+                logger.info(`Queued video_edit from Slack: ${f.name} -> ${item.id}`);
+                itemsQueued++;
+              }
+            }
+            break;
+          }
+
           case "text": {
             if (text.trim()) {
               const item = await this.contentQueue.addItem({
@@ -308,43 +338,43 @@ export class SlackListenerService {
       }
     });
 
-    // /ping — quick health check with uptime and stats
-    this.app.command("/ping", async ({ ack, respond }) => {
+    // /video-status [project-id]
+    this.app.command("/video-status", async ({ command, ack, respond }) => {
       await ack();
       try {
-        const now = new Date();
-        const upMs = now.getTime() - this.startedAt.getTime();
-        const hours = Math.floor(upMs / 3_600_000);
-        const mins = Math.floor((upMs % 3_600_000) / 60_000);
-        const uptime = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+        const projectId = command.text?.trim();
+        if (!projectId) {
+          await respond({
+            text: "Usage: `/video-status <project-id>`",
+            response_type: "ephemeral",
+          });
+          return;
+        }
+        // Fetch project status and respond
+        const { createSupabaseClient } = await import("../utils/supabase.js");
+        const supabase = createSupabaseClient();
+        const { data: project } = await supabase
+          .from("video_projects")
+          .select("*")
+          .eq("id", projectId)
+          .single();
 
-        const summary = await this.contentQueue.getQueueSummary();
-        const next = summary.upcoming[0];
-        const nextText = next
-          ? `${next.type} on ${new Date(next.scheduled_for!).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
-          : "Nothing scheduled";
+        if (!project) {
+          await respond({
+            text: `Video project \`${projectId}\` not found.`,
+            response_type: "ephemeral",
+          });
+          return;
+        }
 
+        const { buildVideoStatusCard } = await import("../utils/slack-blocks.js");
         await respond({
-          blocks: [
-            {
-              type: "section",
-              text: {
-                type: "mrkdwn",
-                text: [
-                  `:satellite: *Social Agent is alive!*`,
-                  `*Uptime:* ${uptime}`,
-                  `*Next post:* ${nextText}`,
-                  `*Queue:* ${summary.ready} ready · ${summary.awaiting_approval} awaiting approval · ${summary.pending} pending`,
-                  `*Today:* ${summary.posted_today} posted · ${summary.failed} failed`,
-                ].join("\n"),
-              },
-            },
-          ],
-          text: "Pong!",
+          blocks: buildVideoStatusCard(project),
+          text: `Video project: ${project.title}`,
           response_type: "ephemeral",
         });
       } catch (error) {
-        logger.error(`Error handling /ping: ${error}`);
+        logger.error(`Error handling /video-status: ${error}`);
         await respond({ text: `Error: ${error}`, response_type: "ephemeral" });
       }
     });
@@ -593,6 +623,86 @@ export class SlackListenerService {
     this.app.action("dismiss_repost", async ({ ack }) => {
       await ack();
       // No-op — just acknowledge
+    });
+
+    // Video idea actions
+    this.app.action("approve_video_idea", async ({ action, ack }) => {
+      await ack();
+      try {
+        const ideaId = "value" in action ? action.value : undefined;
+        if (!ideaId) return;
+        const { createSupabaseClient } = await import("../utils/supabase.js");
+        const supabase = createSupabaseClient();
+        await supabase
+          .from("video_ideas")
+          .update({ status: "approved", updated_at: new Date().toISOString() })
+          .eq("id", ideaId);
+        logger.info(`Approved video idea ${ideaId}`);
+      } catch (error) {
+        logger.error(`Error approving video idea: ${error}`);
+      }
+    });
+
+    this.app.action("reject_video_idea", async ({ action, ack }) => {
+      await ack();
+      try {
+        const ideaId = "value" in action ? action.value : undefined;
+        if (!ideaId) return;
+        const { createSupabaseClient } = await import("../utils/supabase.js");
+        const supabase = createSupabaseClient();
+        await supabase
+          .from("video_ideas")
+          .update({ status: "rejected", updated_at: new Date().toISOString() })
+          .eq("id", ideaId);
+        logger.info(`Rejected video idea ${ideaId}`);
+      } catch (error) {
+        logger.error(`Error rejecting video idea: ${error}`);
+      }
+    });
+
+    this.app.action("critique_video_idea", async ({ ack }) => {
+      await ack();
+      // Critique is handled via thread replies — just acknowledge
+    });
+
+    // Video project actions
+    this.app.action("approve_video_project", async ({ action, ack }) => {
+      await ack();
+      try {
+        const projectId = "value" in action ? action.value : undefined;
+        if (!projectId) return;
+        const { createSupabaseClient } = await import("../utils/supabase.js");
+        const supabase = createSupabaseClient();
+        await supabase
+          .from("video_projects")
+          .update({ status: "approved", updated_at: new Date().toISOString() })
+          .eq("id", projectId);
+        logger.info(`Approved video project ${projectId}`);
+      } catch (error) {
+        logger.error(`Error approving video project: ${error}`);
+      }
+    });
+
+    this.app.action("feedback_video_project", async ({ ack }) => {
+      await ack();
+      // Feedback is handled via thread replies
+    });
+
+    this.app.action("reject_video_project", async ({ action, ack }) => {
+      await ack();
+      try {
+        const projectId = "value" in action ? action.value : undefined;
+        if (!projectId) return;
+        const { createSupabaseClient } = await import("../utils/supabase.js");
+        const supabase = createSupabaseClient();
+        await supabase
+          .from("video_projects")
+          .update({ status: "archived", updated_at: new Date().toISOString() })
+          .eq("id", projectId);
+        logger.info(`Rejected/archived video project ${projectId}`);
+      } catch (error) {
+        logger.error(`Error rejecting video project: ${error}`);
+      }
     });
 
     // Schedule navigation: previous week

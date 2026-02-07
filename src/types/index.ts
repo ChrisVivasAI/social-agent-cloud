@@ -1,4 +1,4 @@
-export type ContentType = "link" | "image" | "video" | "remotion" | "text";
+export type ContentType = "link" | "image" | "video" | "remotion" | "text" | "video_edit";
 export type Platform = "twitter" | "linkedin" | "both";
 export type ContentStatus =
   | "pending"
@@ -218,6 +218,8 @@ export interface IntakeResult {
   creativeDirection: string | null;
   priority: number;
   summary: string;
+  /** Gemini 3 Flash vision analysis of attached images (if available) */
+  imageAnalysis?: string;
 }
 
 export interface EngagementMetrics {
@@ -266,4 +268,260 @@ export type RemotionCompositionId =
   | "TechNewsVideo"
   | "QuoteCard"
   | "ProductShowcase"
-  | "AudiogramVideo";
+  | "AudiogramVideo"
+  | "StoryVideo"
+  | "ShortFormVideo";
+
+// ============================================================
+// Intelligence Layer Types
+// ============================================================
+
+export type GeminiModel = "pro" | "flash";
+
+export interface AgentMemoryEntry {
+  id: string;
+  category: "feedback" | "performance" | "preference" | "pattern" | "style_guide" | "editing_style";
+  content: Record<string, unknown>;
+  content_text: string;
+  embedding?: number[];
+  relevance_tags: string[];
+  platform?: string;
+  confidence: number;
+  source_id?: string;
+  expires_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PerformanceInsight {
+  id: string;
+  insight_text: string;
+  insight_type:
+    | "engagement_pattern"
+    | "content_type_performance"
+    | "timing_optimization"
+    | "audience_preference"
+    | "template_performance"
+    | "topic_performance";
+  confidence: number;
+  applicable_to: {
+    platform?: string;
+    content_type?: string;
+    template?: string;
+    topic_tags?: string[];
+  };
+  supporting_data: Record<string, unknown>;
+  is_active: boolean;
+  generated_at: string;
+  expires_at?: string;
+}
+
+export interface DynamicPromptContext {
+  task: string;
+  performanceInsights: PerformanceInsight[];
+  relevantMemories: AgentMemoryEntry[];
+  recentPosts: PostHistoryRecord[];
+  queueState: QueueSummary;
+  skillInstructions?: string;
+  userPreferences: Record<string, unknown>;
+  currentContentMix: Record<string, number>;
+}
+
+// ============================================================
+// Video Editor Types
+// ============================================================
+
+export type VideoProjectStatus =
+  | "draft"
+  | "analyzing"
+  | "editing"
+  | "rendering"
+  | "review"
+  | "approved"
+  | "posted"
+  | "archived";
+
+export interface VideoProject {
+  id: string;
+  title: string;
+  goal?: string;
+  status: VideoProjectStatus;
+  current_edl?: EDL;
+  output_url?: string;
+  output_duration_ms?: number;
+  feedback_history: Array<{
+    timestamp: string;
+    feedback: string;
+    applied: boolean;
+  }>;
+  footage_asset_ids: string[];
+  idea_id?: string;
+  content_queue_id?: string;
+  slack_thread_ts?: string;
+  slack_channel_id?: string;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FootageAsset {
+  id: string;
+  storage_url: string;
+  storage_path: string;
+  original_filename?: string;
+  mime_type: string;
+  file_size_bytes?: number;
+  // Technical metadata
+  duration_ms?: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  codec?: string;
+  has_audio: boolean;
+  audio_codec?: string;
+  // AI analysis
+  analysis_status: "pending" | "scanning" | "analyzed" | "failed";
+  flash_analysis?: Record<string, unknown>;
+  pro_analysis?: Record<string, unknown>;
+  scene_boundaries: Array<{
+    start_ms: number;
+    end_ms: number;
+    description: string;
+    tags: string[];
+  }>;
+  key_moments: Array<{
+    timestamp_ms: number;
+    description: string;
+    importance: number;
+  }>;
+  tags: string[];
+  emotional_tone?: string;
+  quality_score?: number;
+  source: "slack_upload" | "url_ingest" | "generated";
+  uploaded_by?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EDLTrackItem {
+  id: string;
+  type: "video_clip" | "audio" | "text_overlay" | "image_overlay" | "transition";
+  source_asset_id?: string; // FK to footage_assets
+  source_url?: string; // for generated assets
+  start_ms: number; // timeline position
+  duration_ms: number;
+  // Source clip properties
+  in_point_ms?: number; // where to start in source
+  out_point_ms?: number; // where to end in source
+  // Properties
+  properties: {
+    speed?: number;
+    opacity?: number;
+    volume?: number;
+    color_grade?: string;
+    text?: string;
+    font_size?: number;
+    position?: { x: number; y: number };
+    transition_type?: "crossfade" | "wipe" | "cut";
+    transition_duration_ms?: number;
+    fade_in_ms?: number;
+    fade_out_ms?: number;
+  };
+  // Narrative structure
+  narrative_role?: "hook" | "buildup" | "climax" | "resolution";
+  reasoning?: string; // why the agent chose this
+}
+
+export interface EDL {
+  version: number;
+  tracks: {
+    video: EDLTrackItem[];
+    audio: EDLTrackItem[];
+    overlays: EDLTrackItem[];
+  };
+  total_duration_ms: number;
+  output_format: {
+    width: number;
+    height: number;
+    fps: number;
+    codec: string;
+  };
+  narrative_structure: Array<{
+    role: "hook" | "buildup" | "climax" | "resolution";
+    start_ms: number;
+    end_ms: number;
+  }>;
+  metadata: Record<string, unknown>;
+}
+
+export interface EDLHistoryEntry {
+  id: string;
+  project_id: string;
+  version: number;
+  edl: EDL;
+  feedback_applied?: string;
+  reasoning?: string;
+  created_at: string;
+}
+
+export type VideoIdeaStatus = "pitched" | "approved" | "rejected" | "in_production" | "completed";
+
+export interface VideoIdea {
+  id: string;
+  concept: string;
+  rationale?: string;
+  target_platform: string;
+  estimated_duration_sec?: number;
+  style_notes?: string;
+  reference_urls: string[];
+  status: VideoIdeaStatus;
+  feedback_history: Array<{
+    timestamp: string;
+    feedback: string;
+    refined_concept?: string;
+  }>;
+  project_id?: string;
+  slack_message_ts?: string;
+  slack_channel_id?: string;
+  week_of?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// ============================================================
+// Gemini Service Types
+// ============================================================
+
+export type ThinkingLevel = "minimal" | "low" | "medium" | "high";
+export type MediaResolution = "media_resolution_low" | "media_resolution_medium" | "media_resolution_high" | "media_resolution_ultra_high";
+
+export interface GeminiGenerateOptions {
+  model?: GeminiModel;
+  maxTokens?: number;
+  temperature?: number;
+  jsonMode?: boolean;
+  systemInstruction?: string;
+  /** Gemini 3 thinking depth — "high" (default) for complex reasoning, "minimal" for fast tasks */
+  thinkingLevel?: ThinkingLevel;
+  /** Enable code_execution tool for Agentic Vision — model auto-zooms/crops images */
+  agenticVision?: boolean;
+}
+
+export interface GeminiVisionInput {
+  type: "image" | "video";
+  data: Buffer | string; // Buffer for inline, string for GCS URI
+  mimeType: string;
+  /** Per-input media resolution — controls token cost per image/frame */
+  mediaResolution?: MediaResolution;
+}
+
+export interface ProbeResult {
+  duration_ms: number;
+  width: number;
+  height: number;
+  fps: number;
+  codec: string;
+  has_audio: boolean;
+  audio_codec?: string;
+  file_size_bytes: number;
+}

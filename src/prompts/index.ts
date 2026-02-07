@@ -306,7 +306,7 @@ The user may send:
 
 Classify the message and return a JSON object inside <intake> tags with this structure:
 {
-  "contentType": "link" | "image" | "video" | "remotion" | "text",
+  "contentType": "link" | "image" | "video" | "remotion" | "text" | "video_edit",
   "url": "extracted URL or null",
   "scheduling": {
     "intent": "next_available" | "asap" | "specific_date" | "this_week",
@@ -320,6 +320,7 @@ Classify the message and return a JSON object inside <intake> tags with this str
 
 Rules:
 - If the user explicitly requests video *generation* or a Remotion video (e.g. "make a video about X", "remotion video about Y", "generate a video"), contentType is "remotion" — even if a URL is also present (the URL becomes supplemental context). Extract the topic/subject as creativeDirection.
+- If the user sends a video file and asks you to EDIT it (e.g. "edit this video", "cut the first 10 seconds", "add music to this", "trim this clip"), contentType is "video_edit". This is different from just posting a video — "video_edit" means the user wants AI-powered editing of their footage before posting.
 - If the message contains a URL and does NOT request video generation, contentType is "link" (even if text accompanies it)
 - If the message mentions attached files, use the file type info provided to set contentType to "image" or "video"
 - If no URL and no files and no video generation request, contentType is "text"

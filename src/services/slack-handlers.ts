@@ -15,10 +15,17 @@ import {
 import { ContentDiscoveryService } from "./content-discovery.js";
 import { createSupabaseClient } from "../utils/supabase.js";
 import { logger } from "../utils/logger.js";
+import {
+  buildVideoIdeaCard,
+  buildVideoReviewCard,
+  buildVideoStatusCard,
+} from "../utils/slack-blocks.js";
 import type {
   ContentQueueItem,
   DiscoveredContent,
   Platform,
+  VideoIdea,
+  VideoProject,
 } from "../types/index.js";
 
 export class SlackHandlerService {
@@ -407,5 +414,72 @@ export class SlackHandlerService {
     logger.info(
       `Cross-posted content to ${targetPlatform} from post history ${postHistoryId}`,
     );
+  }
+
+  // ─── Video Editor handlers ───
+
+  async sendVideoIdeaCard(
+    idea: VideoIdea,
+    channelId: string,
+  ): Promise<void> {
+    const client = this.getClient();
+    const blocks = buildVideoIdeaCard(idea);
+    const result = await client.chat.postMessage({
+      channel: channelId,
+      text: `Video idea: ${idea.concept.substring(0, 100)}`,
+      blocks,
+    });
+
+    if (result.ts) {
+      const supabase = createSupabaseClient();
+      await supabase
+        .from("video_ideas")
+        .update({
+          slack_message_ts: result.ts,
+          slack_channel_id: channelId,
+        })
+        .eq("id", idea.id);
+    }
+  }
+
+  async sendVideoReviewCard(
+    project: VideoProject,
+    channelId: string,
+  ): Promise<void> {
+    const client = this.getClient();
+    const blocks = buildVideoReviewCard(project);
+    await client.chat.postMessage({
+      channel: channelId,
+      text: `Video ready for review: ${project.title}`,
+      blocks,
+      thread_ts: project.slack_thread_ts || undefined,
+    });
+  }
+
+  async sendVideoStatusCard(
+    project: VideoProject,
+    channelId: string,
+  ): Promise<void> {
+    const client = this.getClient();
+    const blocks = buildVideoStatusCard(project);
+    await client.chat.postMessage({
+      channel: channelId,
+      text: `Video project status: ${project.title}`,
+      blocks,
+      thread_ts: project.slack_thread_ts || undefined,
+    });
+  }
+
+  async sendProgressUpdate(
+    channelId: string,
+    threadTs: string,
+    message: string,
+  ): Promise<void> {
+    const client = this.getClient();
+    await client.chat.postMessage({
+      channel: channelId,
+      text: message,
+      thread_ts: threadTs,
+    });
   }
 }

@@ -28,6 +28,9 @@ import { ScraperService } from "./scraper.js";
 import { ContentQueueService } from "./content-queue.js";
 import { RemotionService } from "./remotion-service.js";
 import { FalService } from "./fal-service.js";
+import { DynamicPromptBuilder } from "./dynamic-prompt-builder.js";
+import { AgentMemoryService } from "./agent-memory.js";
+import { GeminiService } from "./gemini-service.js";
 import { createSupabaseClient } from "../utils/supabase.js";
 import { logger } from "../utils/logger.js";
 import type {
@@ -46,15 +49,84 @@ export class ContentGeneratorService {
   private queue: ContentQueueService;
   private remotionService: RemotionService;
   private falService: FalService;
+  private promptBuilder: DynamicPromptBuilder | null = null;
+  private gemini: GeminiService | null = null;
 
   constructor(
     queue: ContentQueueService,
     remotionService: RemotionService,
     falService: FalService,
+    promptBuilder?: DynamicPromptBuilder,
+    _memory?: AgentMemoryService,
+    gemini?: GeminiService,
   ) {
     this.queue = queue;
     this.remotionService = remotionService;
     this.falService = falService;
+    this.promptBuilder = promptBuilder || null;
+    this.gemini = gemini || null;
+  }
+
+  /**
+   * Analyze a generated image for quality using Gemini 3 Flash vision.
+   * Returns a score (1-10) and issues found. Uses media_resolution_high for detail.
+   */
+  async analyzeImageQuality(
+    imageBuffer: Buffer,
+    intendedContent: string,
+  ): Promise<{ score: number; issues: string[]; passesGate: boolean }> {
+    if (!this.gemini?.isAvailable) {
+      return { score: 8, issues: [], passesGate: true }; // skip gate if no Gemini
+    }
+
+    try {
+      const result = await this.gemini.analyzeVision(
+        `You are a social media image quality analyst. Analyze this AI-generated image that is
+intended for a social media post about: "${intendedContent}"
+
+Evaluate:
+1. Visual quality — is it sharp, well-composed, aesthetically pleasing?
+2. Text readability — if there's text in the image, is it legible and spelled correctly?
+3. Brand safety — any inappropriate content, distorted faces, or artifacts?
+4. Relevance — does the image match the intended content?
+5. Platform suitability — would this look good as a social media post image?
+
+Return JSON:
+{
+  "score": <1-10>,
+  "issues": ["<list of specific issues found>"],
+  "text_found": "<any text found in the image>",
+  "recommendation": "pass" | "regenerate"
+}`,
+        [{
+          type: "image",
+          data: imageBuffer,
+          mimeType: "image/png",
+          mediaResolution: "media_resolution_high",
+        }],
+        { model: "flash", jsonMode: true, maxTokens: 1024, thinkingLevel: "low" },
+      );
+
+      const parsed = JSON.parse(result) as {
+        score: number;
+        issues: string[];
+        recommendation: string;
+      };
+
+      const passesGate = parsed.score >= 5 && parsed.recommendation !== "regenerate";
+      logger.info(
+        `Image quality gate: score=${parsed.score}, issues=${parsed.issues.length}, pass=${passesGate}`,
+      );
+
+      return {
+        score: parsed.score,
+        issues: parsed.issues || [],
+        passesGate,
+      };
+    } catch (err) {
+      logger.warn(`Image quality gate failed, allowing through: ${err}`);
+      return { score: 7, issues: [], passesGate: true };
+    }
   }
 
   /**
@@ -74,17 +146,32 @@ export class ContentGeneratorService {
       ? `\n\n<user_direction>\nThe user has requested the following creative direction for this post:\n${creativeDirection}\n</user_direction>`
       : "";
 
-    // Step 3: Generate marketing report
+    // Step 3: Generate marketing report (with dynamic prompt augmentation)
+    const reportPrompt = this.promptBuilder
+      ? await this.promptBuilder.buildContentGenerationPrompt(GENERATE_REPORT_PROMPT, {
+          contentType: "link",
+          topic: scraped.content.substring(0, 200),
+          url,
+        })
+      : GENERATE_REPORT_PROMPT;
+
     const reportResponse = await generateText(
-      GENERATE_REPORT_PROMPT,
+      reportPrompt,
       `Here is the content I'd like a marketing report on:\n\n${scraped.content.substring(0, 8000)}${directionBlock}`,
       { maxTokens: 4096 },
     );
     const report = parseReport(reportResponse);
 
-    // Step 4: Generate platform-specific posts
+    // Step 4: Generate platform-specific posts (with dynamic prompt augmentation)
+    const postPrompt = this.promptBuilder
+      ? await this.promptBuilder.buildContentGenerationPrompt(GENERATE_POST_PROMPT, {
+          contentType: "link",
+          url,
+        })
+      : GENERATE_POST_PROMPT;
+
     const postResponse = await generateText(
-      GENERATE_POST_PROMPT,
+      postPrompt,
       `Here is the report on the content I'd like promoted:\n<report>\n${report}\n</report>\n\nAnd here is the link to the content:\n<link>\n${url}\n</link>${directionBlock}`,
       { maxTokens: 2048 },
     );
@@ -228,10 +315,23 @@ export class ContentGeneratorService {
 
     const imageTasks = imageScenes.map((item) =>
       this.falService.generateImage(item.scene.imagePrompt!).then(async (buffer) => {
+        // Quality gate: analyze generated image before uploading
+        const quality = await this.analyzeImageQuality(buffer, item.scene.imagePrompt!);
+        let finalBuffer = buffer;
+
+        if (!quality.passesGate) {
+          logger.warn(
+            `Image quality gate failed for scene ${item.index} (score=${quality.score}, issues=${quality.issues.join(", ")}). Regenerating...`,
+          );
+          // Retry once with enhanced prompt
+          const retryPrompt = `${item.scene.imagePrompt!}. IMPORTANT: ${quality.issues.join(". ")}. Ensure high quality, no text artifacts, clean composition.`;
+          finalBuffer = await this.falService.generateImage(retryPrompt);
+        }
+
         const imgPath = `videos/images/${Date.now()}-${item.index}.png`;
         const { error } = await supabase.storage
           .from("videos")
-          .upload(imgPath, buffer, { contentType: "image/png" });
+          .upload(imgPath, finalBuffer, { contentType: "image/png" });
         if (error) {
           logger.warn(`Failed to upload scene ${item.index} image: ${error.message}`);
           return { index: item.index, url: null };
@@ -467,13 +567,17 @@ export class ContentGeneratorService {
    * Select the best template for given content via Claude
    */
   private async selectTemplate(report: string): Promise<RemotionCompositionId> {
+    const templatePrompt = this.promptBuilder
+      ? await this.promptBuilder.buildTemplateSelectionPrompt(TEMPLATE_SELECTION_PROMPT, report)
+      : TEMPLATE_SELECTION_PROMPT;
+
     const response = await generateText(
-      TEMPLATE_SELECTION_PROMPT,
+      templatePrompt,
       `Here is the marketing report:\n<report>\n${report}\n</report>`,
       { maxTokens: 256 },
     );
     const selection = parseTemplateSelection(response);
-    const valid: RemotionCompositionId[] = ["TechNewsVideo", "QuoteCard", "ProductShowcase", "AudiogramVideo"];
+    const valid: RemotionCompositionId[] = ["TechNewsVideo", "QuoteCard", "ProductShowcase", "AudiogramVideo", "StoryVideo", "ShortFormVideo"];
     if (selection && valid.includes(selection as RemotionCompositionId)) {
       return selection as RemotionCompositionId;
     }
@@ -555,10 +659,22 @@ export class ContentGeneratorService {
 
       const imageTasks = imageScenes.map((item) =>
         this.falService.generateImage(item.scene.imagePrompt!).then(async (buffer) => {
+          // Quality gate: analyze generated image before uploading
+          const quality = await this.analyzeImageQuality(buffer, item.scene.imagePrompt!);
+          let finalBuffer = buffer;
+
+          if (!quality.passesGate) {
+            logger.warn(
+              `ProductShowcase image quality gate failed for scene ${item.index} (score=${quality.score}). Regenerating...`,
+            );
+            const retryPrompt = `${item.scene.imagePrompt!}. IMPORTANT: ${quality.issues.join(". ")}. Ensure high quality, clean composition.`;
+            finalBuffer = await this.falService.generateImage(retryPrompt);
+          }
+
           const imgPath = `videos/images/${Date.now()}-${item.index}.png`;
           const { error } = await supabase.storage
             .from("videos")
-            .upload(imgPath, buffer, { contentType: "image/png" });
+            .upload(imgPath, finalBuffer, { contentType: "image/png" });
           if (error) {
             logger.warn(`Failed to upload scene ${item.index} image: ${error.message}`);
             return { index: item.index, url: null };
@@ -997,6 +1113,16 @@ export class ContentGeneratorService {
             generated_post: textResult.twitter,
             generated_post_twitter: textResult.twitter,
             generated_post_linkedin: textResult.linkedin,
+            status: "generated",
+          });
+          break;
+        }
+
+        case "video_edit": {
+          // Video edit items are handled by the VideoEditorAgent
+          // Just mark as generated so the video editor pipeline picks it up
+          logger.info(`Video edit item ${item.id} — delegating to video editor pipeline`);
+          await this.queue.updateItem(item.id, {
             status: "generated",
           });
           break;

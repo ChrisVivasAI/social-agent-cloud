@@ -11,6 +11,12 @@ import { PostingService } from "./services/posting-service.js";
 import { RemotionService } from "./services/remotion-service.js";
 import { FalService } from "./services/fal-service.js";
 import { IntakeService } from "./services/intake-service.js";
+import { GeminiService } from "./services/gemini-service.js";
+import { AgentMemoryService } from "./services/agent-memory.js";
+import { DynamicPromptBuilder } from "./services/dynamic-prompt-builder.js";
+import { FFmpegService } from "./services/ffmpeg-service.js";
+import { FootageLibraryService } from "./services/footage-library.js";
+import { VideoEditorAgent } from "./services/video-editor-agent.js";
 import { logger } from "./utils/logger.js";
 
 // Keep the process alive on unhandled errors — log them but don't crash
@@ -26,7 +32,18 @@ async function main() {
   const config = validateEnv();
   logger.info("Environment validated successfully");
 
-  // 2. Initialize core services
+  // 2. Initialize intelligence layer
+  const gemini = new GeminiService();
+  const memory = gemini.isAvailable ? new AgentMemoryService(gemini) : null;
+  const promptBuilder = memory ? new DynamicPromptBuilder(memory) : null;
+
+  if (gemini.isAvailable) {
+    logger.info("Intelligence layer enabled (Gemini + Memory + Dynamic Prompts)");
+  } else {
+    logger.info("Intelligence layer disabled (GOOGLE_CLOUD_PROJECT not set)");
+  }
+
+  // 3. Initialize core services
   const contentQueue = new ContentQueueService();
   const remotionService = new RemotionService();
   const falService = new FalService();
@@ -34,10 +51,31 @@ async function main() {
     contentQueue,
     remotionService,
     falService,
+    promptBuilder || undefined,
+    memory || undefined,
+    gemini.isAvailable ? gemini : undefined,
   );
   const postingService = new PostingService();
 
-  // 3. Initialize Slack services if configured
+  // 4. Initialize video editor (if Gemini is available)
+  let videoEditor: VideoEditorAgent | null = null;
+  const ffmpegService = new FFmpegService();
+  const footageLibrary = new FootageLibraryService(gemini, ffmpegService);
+
+  if (gemini.isAvailable && memory && promptBuilder) {
+    videoEditor = new VideoEditorAgent(
+      gemini,
+      ffmpegService,
+      footageLibrary,
+      promptBuilder,
+      memory,
+      falService,
+      remotionService,
+    );
+    logger.info("Video editor agent enabled");
+  }
+
+  // 5. Initialize Slack services if configured
   let slackListener: SlackListenerService | null = null;
   let slackNotification: SlackNotificationService | null = null;
   let slackHandlers: SlackHandlerService | null = null;
@@ -50,7 +88,7 @@ async function main() {
   if (slackReady) {
     // Create handler service (needs WebClient set later)
     slackHandlers = new SlackHandlerService(contentQueue);
-    const intakeService = new IntakeService();
+    const intakeService = new IntakeService(gemini.isAvailable ? gemini : undefined);
 
     // Create listener (this creates the Bolt app + exposes WebClient)
     slackListener = new SlackListenerService(contentQueue, slackHandlers, intakeService);
@@ -87,7 +125,7 @@ async function main() {
     });
   }
 
-  // 4. Start the scheduler (cron jobs)
+  // 6. Start the scheduler (cron jobs)
   const scheduler = new SchedulerService(
     contentQueue,
     contentGenerator,
@@ -95,6 +133,10 @@ async function main() {
     remotionService,
     slackNotification,
     slackHandlers,
+    gemini.isAvailable ? gemini : undefined,
+    memory || undefined,
+    promptBuilder || undefined,
+    videoEditor || undefined,
   );
   scheduler.start();
 

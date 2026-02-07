@@ -3,6 +3,7 @@ import { createSupabaseClient } from "../utils/supabase.js";
 import { generateText } from "../utils/model.js";
 import { logger } from "../utils/logger.js";
 import type { DiscoveredContent } from "../types/index.js";
+import type { DynamicPromptBuilder } from "./dynamic-prompt-builder.js";
 
 const RSS_FEEDS = [
   {
@@ -48,6 +49,11 @@ Article snippet: {{SNIPPET}}`;
 export class ContentDiscoveryService {
   private parser = new Parser();
   private supabase = createSupabaseClient();
+  private promptBuilder: DynamicPromptBuilder | null = null;
+
+  constructor(promptBuilder?: DynamicPromptBuilder) {
+    this.promptBuilder = promptBuilder || null;
+  }
 
   /**
    * Poll all RSS feeds, deduplicate, score relevance, and return high-quality discoveries.
@@ -95,16 +101,31 @@ export class ContentDiscoveryService {
     if (newItems.length === 0) return [];
     logger.info(`Found ${newItems.length} new items from RSS feeds`);
 
+    // Dynamic threshold based on queue state
+    const { data: queueCount } = await this.supabase
+      .from("content_queue")
+      .select("id", { count: "exact", head: true })
+      .in("status", ["pending", "generating", "generated", "awaiting_approval", "ready"]);
+    const currentQueueSize = (queueCount as unknown as number) || 0;
+    // Lower threshold when queue is empty, raise when full
+    const dynamicThreshold = currentQueueSize <= 2 ? 0.5 : currentQueueSize >= 6 ? 0.85 : 0.7;
+
     // Score relevance via Claude (batch — max 10 per cycle)
     const toScore = newItems.slice(0, 10);
     const scored: DiscoveredContent[] = [];
 
     for (const item of toScore) {
       try {
-        const prompt = RELEVANCE_PROMPT.replace("{{TITLE}}", item.title).replace(
+        let prompt = RELEVANCE_PROMPT.replace("{{TITLE}}", item.title).replace(
           "{{SNIPPET}}",
           item.snippet,
         );
+
+        // Augment with topic performance insights if available
+        if (this.promptBuilder) {
+          prompt = await this.promptBuilder.buildDiscoveryPrompt(prompt);
+        }
+
         const response = await generateText(
           prompt,
           `Score this article for relevance.`,
@@ -141,7 +162,7 @@ export class ContentDiscoveryService {
           continue;
         }
 
-        if (score >= 0.7) {
+        if (score >= dynamicThreshold) {
           scored.push(data as DiscoveredContent);
         }
       } catch (error) {

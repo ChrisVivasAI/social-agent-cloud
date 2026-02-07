@@ -7,6 +7,10 @@ import { SlackNotificationService } from "./slack-notification.js";
 import { SlackHandlerService } from "./slack-handlers.js";
 import { MetricsCollectorService } from "./metrics-collector.js";
 import { ContentDiscoveryService } from "./content-discovery.js";
+import { GeminiService } from "./gemini-service.js";
+import { AgentMemoryService } from "./agent-memory.js";
+import { DynamicPromptBuilder } from "./dynamic-prompt-builder.js";
+import { VideoEditorAgent } from "./video-editor-agent.js";
 import { getConfig } from "../config/env.js";
 import { MAX_RETRY_ATTEMPTS } from "../config/schedule.js";
 import { logger } from "../utils/logger.js";
@@ -16,6 +20,7 @@ export class SchedulerService {
   private prePostNotifiedIds = new Set<string>();
   private metricsCollector: MetricsCollectorService;
   private contentDiscovery: ContentDiscoveryService;
+  private videoEditor: VideoEditorAgent | null = null;
 
   constructor(
     private contentQueue: ContentQueueService,
@@ -24,9 +29,14 @@ export class SchedulerService {
     private remotionService: RemotionService,
     private slackNotification: SlackNotificationService | null,
     private slackHandlers: SlackHandlerService | null,
+    gemini?: GeminiService,
+    memory?: AgentMemoryService,
+    promptBuilder?: DynamicPromptBuilder,
+    videoEditor?: VideoEditorAgent,
   ) {
-    this.metricsCollector = new MetricsCollectorService();
+    this.metricsCollector = new MetricsCollectorService(gemini, memory, promptBuilder);
     this.contentDiscovery = new ContentDiscoveryService();
+    this.videoEditor = videoEditor || null;
   }
 
   start(): void {
@@ -109,6 +119,38 @@ export class SchedulerService {
         }),
       );
     }
+
+    // Job 11: Performance analysis - weekly on Sunday 9 AM
+    this.tasks.push(
+      cron.schedule("0 9 * * 0", () => this.runPerformanceAnalysis(), {
+        timezone: tz,
+      }),
+    );
+
+    // Job 12: Check video project status - every 5 minutes
+    if (this.videoEditor) {
+      this.tasks.push(
+        cron.schedule("*/5 * * * *", () => this.checkVideoProjects(), {
+          timezone: tz,
+        }),
+      );
+    }
+
+    // Job 13: Weekly video idea generation - Monday 8 AM
+    if (this.videoEditor && this.slackHandlers) {
+      this.tasks.push(
+        cron.schedule("0 8 * * 1", () => this.generateWeeklyVideoIdeas(), {
+          timezone: tz,
+        }),
+      );
+    }
+
+    // Job 14: Clean expired memories - daily at 3 AM
+    this.tasks.push(
+      cron.schedule("0 3 * * *", () => this.cleanExpiredMemories(), {
+        timezone: tz,
+      }),
+    );
 
     logger.info(
       `Scheduler started with ${this.tasks.length} cron jobs (timezone: ${tz})`,
@@ -313,6 +355,31 @@ export class SchedulerService {
       logger.info(`Retrying ${items.length} failed items`);
 
       for (const item of items) {
+        // Smart retry: classify errors and adjust strategy
+        const error = item.error_message || "";
+        const isPermanent =
+          error.includes("not relevant") ||
+          error.includes("Unknown content type") ||
+          error.includes("missing content_url") ||
+          error.includes("missing source_text");
+
+        if (isPermanent) {
+          logger.info(`Skipping permanent error for item ${item.id}: ${error}`);
+          continue;
+        }
+
+        // Rate limit errors get longer backoff
+        const isRateLimit =
+          error.includes("429") ||
+          error.includes("rate limit") ||
+          error.includes("Too Many Requests");
+
+        if (isRateLimit && item.retry_count < 2) {
+          // Skip this cycle, let it retry next time (effectively doubles backoff)
+          logger.info(`Rate-limited item ${item.id}, deferring retry`);
+          continue;
+        }
+
         await this.contentQueue.updateItem(item.id, {
           status: "pending",
           error_message: null,
@@ -410,6 +477,68 @@ export class SchedulerService {
       );
     } catch (error) {
       logger.error(`Error suggesting evergreen reposts: ${error}`);
+    }
+  }
+
+  private async runPerformanceAnalysis(): Promise<void> {
+    try {
+      await this.metricsCollector.analyzePerformancePatterns();
+    } catch (error) {
+      logger.error(`Error running performance analysis: ${error}`);
+    }
+  }
+
+  private async checkVideoProjects(): Promise<void> {
+    if (!this.videoEditor) return;
+    try {
+      // Check for projects in "rendering" status that may have completed
+      const renderingProjects = await this.videoEditor.getProjectsByStatus("rendering");
+      for (const project of renderingProjects) {
+        logger.info(`Checking rendering status for video project ${project.id}`);
+        // The video editor agent handles its own rendering status checks
+        // This job just logs for visibility
+      }
+    } catch (error) {
+      logger.error(`Error checking video projects: ${error}`);
+    }
+  }
+
+  private async generateWeeklyVideoIdeas(): Promise<void> {
+    if (!this.videoEditor) return;
+    try {
+      const channelId = getConfig().SLACK_CHANNEL_ID;
+      const ideas = await this.videoEditor.generateWeeklyIdeas(channelId);
+      logger.info(`Generated ${ideas.length} weekly video ideas`);
+
+      // Post idea cards to Slack
+      if (this.slackHandlers && channelId && ideas.length > 0) {
+        for (const idea of ideas) {
+          await this.slackHandlers.sendVideoIdeaCard(idea, channelId);
+        }
+      }
+    } catch (error) {
+      logger.error(`Error generating weekly video ideas: ${error}`);
+    }
+  }
+
+  private async cleanExpiredMemories(): Promise<void> {
+    try {
+      // Import dynamically to avoid circular deps if memory isn't configured
+      const { createSupabaseClient } = await import("../utils/supabase.js");
+      const supabase = createSupabaseClient();
+      const { data } = await supabase
+        .from("agent_memory")
+        .delete()
+        .lt("expires_at", new Date().toISOString())
+        .not("expires_at", "is", null)
+        .select("id");
+
+      const count = data?.length || 0;
+      if (count > 0) {
+        logger.info(`Cleaned ${count} expired memories`);
+      }
+    } catch (error) {
+      logger.error(`Error cleaning expired memories: ${error}`);
     }
   }
 }
