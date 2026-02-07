@@ -1,4 +1,7 @@
-import { App, ExpressReceiver, LogLevel } from "@slack/bolt";
+import boltPkg from "@slack/bolt";
+const { App, ExpressReceiver, LogLevel } = boltPkg;
+type App = InstanceType<typeof App>;
+type ExpressReceiver = InstanceType<typeof ExpressReceiver>;
 import type { WebClient } from "@slack/web-api";
 import type { Application } from "express";
 import { ContentQueueService } from "./content-queue.js";
