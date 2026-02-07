@@ -45,17 +45,27 @@ if command -v docker &>/dev/null; then
 else
   echo "==> Installing Docker Engine from official repository..."
 
+  # Detect distro (ubuntu or debian)
+  if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    DISTRO="${ID}"       # "ubuntu" or "debian"
+    CODENAME="${VERSION_CODENAME}"
+  else
+    DISTRO="debian"
+    CODENAME="bookworm"
+  fi
+
   # Add Docker's official GPG key
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+  curl -fsSL "https://download.docker.com/linux/${DISTRO}/gpg" \
     | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   chmod a+r /etc/apt/keyrings/docker.gpg
 
   # Set up the Docker apt repository
   echo \
     "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/ubuntu \
-    $(lsb_release -cs) stable" \
+    https://download.docker.com/linux/${DISTRO} \
+    ${CODENAME} stable" \
     | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
   apt-get update -y
