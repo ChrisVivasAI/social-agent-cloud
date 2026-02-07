@@ -41,7 +41,11 @@ services:
           memory: 2G
 
   dashboard:
-    build: ./command-center
+    build:
+      context: ./command-center
+      args:
+        - NEXT_PUBLIC_SUPABASE_URL=${SUPABASE_URL}
+        - NEXT_PUBLIC_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
     env_file: .env
     environment:
       - NEXT_PUBLIC_SUPABASE_URL=${SUPABASE_URL}

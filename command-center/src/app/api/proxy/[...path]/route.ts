@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const AGENT_API_URL = process.env.AGENT_API_URL || "http://agent:3002";
+const DASHBOARD_SECRET = process.env.DASHBOARD_SECRET;
 
 async function proxyRequest(request: NextRequest, params: { path: string[] }) {
   const path = "/" + params.path.join("/");
@@ -8,6 +9,9 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
 
   const headers = new Headers();
   headers.set("Content-Type", request.headers.get("Content-Type") || "application/json");
+  if (DASHBOARD_SECRET) {
+    headers.set("Authorization", `Bearer ${DASHBOARD_SECRET}`);
+  }
 
   const init: RequestInit = {
     method: request.method,
