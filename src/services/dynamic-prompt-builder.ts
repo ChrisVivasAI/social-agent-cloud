@@ -1,5 +1,6 @@
 import { AgentMemoryService } from "./agent-memory.js";
 import { createSupabaseClient } from "../utils/supabase.js";
+import { logger } from "../utils/logger.js";
 import type {
   PerformanceInsight,
   AgentMemoryEntry,
@@ -82,6 +83,12 @@ export class DynamicPromptBuilder {
     const topPosts = await this.getTopRecentPosts(options.platform, 3);
     if (topPosts.length > 0) {
       sections.push(this.formatTopPostsSection(topPosts));
+    }
+
+    // 4b. RAG: retrieve semantically similar high-performing posted content
+    const ragExamples = await this.retrieveRAGExamples(options);
+    if (ragExamples.length > 0) {
+      sections.push(this.formatRAGExamplesSection(ragExamples));
     }
 
     // 5. Inject voice profile (structured) — replaces raw style guide
@@ -405,6 +412,135 @@ CRITICAL RULES:
     }
 
     return sections.join("\n");
+  }
+
+  // ─── RAG Helpers ───
+
+  /**
+   * Retrieve semantically similar posted content from agent memory,
+   * cross-referenced with post_history for engagement metrics.
+   * Returns the top examples filtered by platform.
+   */
+  private async retrieveRAGExamples(
+    options: {
+      contentType?: string;
+      platform?: string;
+      topic?: string;
+    } = {},
+  ): Promise<
+    Array<{
+      postText: string;
+      platform: string;
+      contentType: string;
+      likes: number;
+      impressions: number;
+      engagementRate: number;
+    }>
+  > {
+    try {
+      const queryText = [
+        options.topic,
+        options.contentType && `${options.contentType} content`,
+        options.platform && `${options.platform} post`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      if (!queryText) return [];
+
+      // Semantic search for similar posted content
+      const candidates = await this.memory.search(queryText, {
+        category: "posted_content",
+        platform: options.platform,
+        limit: 10,
+      });
+
+      if (candidates.length === 0) return [];
+
+      // Get queue item IDs from the memory entries to look up metrics
+      const queueItemIds = candidates
+        .map((c) => (c.content as Record<string, unknown>).queue_item_id as string)
+        .filter(Boolean);
+
+      if (queueItemIds.length === 0) {
+        // No queue item references — return post texts without metrics
+        return candidates.slice(0, 5).map((c) => ({
+          postText: c.content_text.substring(0, 300),
+          platform: c.platform || options.platform || "unknown",
+          contentType: (c.content as Record<string, unknown>).content_type as string || "unknown",
+          likes: 0,
+          impressions: 0,
+          engagementRate: 0,
+        }));
+      }
+
+      // Cross-reference with post_history for engagement metrics
+      const { data: historyRows } = await this.supabase
+        .from("post_history")
+        .select("content_queue_id, platform, likes, impressions, engagement_rate")
+        .in("content_queue_id", queueItemIds)
+        .eq("metrics_pulled_24h", true);
+
+      const metricsMap = new Map<string, { likes: number; impressions: number; engagementRate: number }>();
+      for (const row of historyRows || []) {
+        const key = `${row.content_queue_id}:${row.platform}`;
+        metricsMap.set(key, {
+          likes: row.likes || 0,
+          impressions: row.impressions || 0,
+          engagementRate: row.engagement_rate || 0,
+        });
+      }
+
+      // Merge and sort by engagement
+      const results = candidates.map((c) => {
+        const content = c.content as Record<string, unknown>;
+        const queueId = content.queue_item_id as string;
+        const plat = c.platform || options.platform || "unknown";
+        const metrics = metricsMap.get(`${queueId}:${plat}`) || {
+          likes: 0,
+          impressions: 0,
+          engagementRate: 0,
+        };
+        return {
+          postText: c.content_text.substring(0, 300),
+          platform: plat,
+          contentType: (content.content_type as string) || "unknown",
+          ...metrics,
+        };
+      });
+
+      // Sort by likes descending, take top 5
+      results.sort((a, b) => b.likes - a.likes);
+      return results.slice(0, 5);
+    } catch (err) {
+      logger.warn(`RAG retrieval failed (non-critical): ${err}`);
+      return [];
+    }
+  }
+
+  private formatRAGExamplesSection(
+    examples: Array<{
+      postText: string;
+      platform: string;
+      contentType: string;
+      likes: number;
+      impressions: number;
+      engagementRate: number;
+    }>,
+  ): string {
+    const lines = examples.map((ex) => {
+      const metrics =
+        ex.likes > 0
+          ? ` — ${ex.likes} likes, ${ex.impressions} impressions, ${(ex.engagementRate * 100).toFixed(1)}% engagement`
+          : " — (metrics pending)";
+      return `- [${ex.platform}/${ex.contentType}] "${ex.postText}"${metrics}`;
+    });
+
+    return (
+      "\n<rag_examples>\nHere are examples of your best-performing posts on similar topics (use as inspiration, do not copy):\n" +
+      lines.join("\n") +
+      "\n</rag_examples>"
+    );
   }
 
   // ─── Private Helpers ───

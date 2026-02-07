@@ -11,24 +11,30 @@ import { FalService } from "./fal-service.js";
 import { RemotionService } from "./remotion-service.js";
 import type {
   VideoProject,
+  VideoSeries,
   FootageAsset,
   EDL,
   VideoIdea,
+  ProjectType,
+  CreativeBrief,
 } from "../types/index.js";
 
 /**
- * AI video editing orchestrator.
+ * AI video editing orchestrator — production content creation tool.
+ *
+ * Supports multiple project types: social clips, commercials, short films,
+ * series episodes, music videos, and documentaries.
  *
  * Manages the full lifecycle of a video project:
- * 1. Create a project with a creative goal
- * 2. Add footage assets
+ * 1. Create a project with a creative brief (audience, mood, style, models)
+ * 2. Add footage assets or generate them via AI (Kling video, Flux images)
  * 3. Analyze footage via Gemini Vision
  * 4. Generate an EDL (Edit Decision List) via Gemini Pro
- * 5. Execute the EDL with FFmpeg (cut, concat, overlay, audio)
+ * 5. Execute the EDL with FFmpeg + AI-generated assets
  * 6. Upload the result and put it in review
  * 7. Accept feedback, regenerate EDL segments, and re-render
  *
- * Also handles idea generation and approval workflows.
+ * Also handles series/episode management, idea generation, and approval workflows.
  */
 export class VideoEditorAgent {
   private supabase = createSupabaseClient();
@@ -64,18 +70,28 @@ export class VideoEditorAgent {
   // ---------------------------------------------------------------------------
 
   /**
-   * Create a new video project.
+   * Create a new video project with optional project type and creative brief.
    */
   async createProject(
     title: string,
     goal: string,
     createdBy?: string,
+    options?: {
+      projectType?: ProjectType;
+      creativeBrief?: CreativeBrief;
+      seriesId?: string;
+      episodeNumber?: number;
+    },
   ): Promise<VideoProject> {
     const { data, error } = await this.supabase
       .from("video_projects")
       .insert({
         title,
         goal,
+        project_type: options?.projectType || "social_clip",
+        creative_brief: options?.creativeBrief || null,
+        series_id: options?.seriesId || null,
+        episode_number: options?.episodeNumber || null,
         status: "draft" as const,
         feedback_history: [],
         footage_asset_ids: [],
@@ -88,7 +104,7 @@ export class VideoEditorAgent {
       throw new Error(`Failed to create video project: ${error.message}`);
     }
 
-    logger.info(`Created video project "${title}" (${data.id})`);
+    logger.info(`Created ${options?.projectType || "social_clip"} project "${title}" (${data.id})`);
     return data as VideoProject;
   }
 
@@ -183,53 +199,57 @@ export class VideoEditorAgent {
       const project = await this.getProject(projectId);
       if (!project) throw new Error(`Project ${projectId} not found`);
 
-      if (project.footage_asset_ids.length === 0) {
-        throw new Error("No footage assets attached to project");
-      }
+      const hasFootage = project.footage_asset_ids.length > 0;
+      let analyzedAssets: FootageAsset[] = [];
+      let footageAnalysis: Array<Record<string, unknown>> = [];
 
-      const footageAssets = await this.loadFootageAssets(
-        project.footage_asset_ids,
-      );
-
-      // Analyze any assets that haven't been analyzed yet
-      const analysisPromises = footageAssets
-        .filter((a) => a.analysis_status !== "analyzed")
-        .map((asset) =>
-          this.footageLibrary.analyzeFootage(asset.id).catch((err: unknown) => {
-            logger.warn(
-              `Failed to analyze asset ${asset.id}: ${err}`,
-            );
-            return null;
-          }),
+      if (hasFootage) {
+        const footageAssets = await this.loadFootageAssets(
+          project.footage_asset_ids,
         );
 
-      if (analysisPromises.length > 0) {
-        await progressCallback?.(
-          `Analyzing ${analysisPromises.length} unanalyzed asset(s)...`,
+        // Analyze any assets that haven't been analyzed yet
+        const analysisPromises = footageAssets
+          .filter((a) => a.analysis_status !== "analyzed")
+          .map((asset) =>
+            this.footageLibrary.analyzeFootage(asset.id).catch((err: unknown) => {
+              logger.warn(
+                `Failed to analyze asset ${asset.id}: ${err}`,
+              );
+              return null;
+            }),
+          );
+
+        if (analysisPromises.length > 0) {
+          await progressCallback?.(
+            `Analyzing ${analysisPromises.length} unanalyzed asset(s)...`,
+          );
+          await Promise.all(analysisPromises);
+        }
+
+        // Reload assets to get fresh analysis data
+        analyzedAssets = await this.loadFootageAssets(
+          project.footage_asset_ids,
         );
-        await Promise.all(analysisPromises);
+
+        footageAnalysis = analyzedAssets.map((a) => ({
+          id: a.id,
+          duration_ms: a.duration_ms,
+          width: a.width,
+          height: a.height,
+          fps: a.fps,
+          has_audio: a.has_audio,
+          scene_boundaries: a.scene_boundaries,
+          key_moments: a.key_moments,
+          tags: a.tags,
+          emotional_tone: a.emotional_tone,
+          quality_score: a.quality_score,
+          flash_analysis: a.flash_analysis,
+          pro_analysis: a.pro_analysis,
+        }));
+      } else {
+        await progressCallback?.("No footage assets — project will use AI-generated content.");
       }
-
-      // Reload assets to get fresh analysis data
-      const analyzedAssets = await this.loadFootageAssets(
-        project.footage_asset_ids,
-      );
-
-      const footageAnalysis = analyzedAssets.map((a) => ({
-        id: a.id,
-        duration_ms: a.duration_ms,
-        width: a.width,
-        height: a.height,
-        fps: a.fps,
-        has_audio: a.has_audio,
-        scene_boundaries: a.scene_boundaries,
-        key_moments: a.key_moments,
-        tags: a.tags,
-        emotional_tone: a.emotional_tone,
-        quality_score: a.quality_score,
-        flash_analysis: a.flash_analysis,
-        pro_analysis: a.pro_analysis,
-      }));
 
       // ── Step B: Generate EDL ─────────────────────────────────────────
       await this.updateStatus(projectId, "editing");
@@ -240,12 +260,19 @@ export class VideoEditorAgent {
         { assets: footageAnalysis },
       );
 
-      const assetIdList = analyzedAssets.map((a) => a.id).join(", ");
+      const assetIdList = analyzedAssets.length > 0
+        ? analyzedAssets.map((a) => a.id).join(", ")
+        : "(none — use AI-generated content for all visuals)";
       const exampleAssetId = analyzedAssets[0]?.id || "ASSET_UUID";
+
+      // Build creative context from project type and brief
+      const briefContext = this.buildBriefContext(project);
 
       const rawEdl = await this.gemini.generateJSON<EDL>(
         editPrompt,
         `CREATIVE GOAL: ${project.goal || "Create an engaging video"}\n\n` +
+          `PROJECT TYPE: ${project.project_type || "social_clip"}\n\n` +
+          `${briefContext}` +
           `AVAILABLE FOOTAGE ASSET IDs (use these EXACTLY as source_asset_id values):\n${assetIdList}\n\n` +
           `EXAMPLE of ONE correct video clip entry:\n` +
           `{\n` +
@@ -259,6 +286,27 @@ export class VideoEditorAgent {
           `  "properties": { "speed": 1 },\n` +
           `  "narrative_role": "hook",\n` +
           `  "reasoning": "Strong opening moment"\n` +
+          `}\n\n` +
+          `AI-GENERATED VIDEO: For shots that don't exist in the footage library (hero shots, b-roll, transitions, opening/closing sequences), use type "ai_generated_video" with a "generation" object:\n` +
+          `{\n` +
+          `  "id": "ai-clip-1",\n` +
+          `  "type": "ai_generated_video",\n` +
+          `  "start_ms": 0,\n` +
+          `  "duration_ms": 5000,\n` +
+          `  "generation": { "prompt": "Cinematic aerial shot of a city skyline at sunset", "duration_seconds": 5 },\n` +
+          `  "properties": { "speed": 1 },\n` +
+          `  "narrative_role": "hook",\n` +
+          `  "reasoning": "AI-generated hero shot for opening"\n` +
+          `}\n\n` +
+          `AI-GENERATED IMAGES: For scene backgrounds, product shots, thumbnails, or title cards, use type "image_overlay" with a "generation" object:\n` +
+          `{\n` +
+          `  "id": "img-1",\n` +
+          `  "type": "image_overlay",\n` +
+          `  "start_ms": 0,\n` +
+          `  "duration_ms": 3000,\n` +
+          `  "generation": { "prompt": "Professional product shot of a smartphone on a minimalist desk" },\n` +
+          `  "properties": {},\n` +
+          `  "reasoning": "Product hero image for commercial"\n` +
           `}\n\n` +
           `VOICEOVER: Add an audio item to tracks.audio with type "audio", properties.text containing the narration script, and NO source_url / NO source_asset_id.\n\n` +
           `All timestamps in MILLISECONDS. Output the complete EDL JSON object.`,
@@ -413,8 +461,21 @@ export class VideoEditorAgent {
           }
 
           videoCutPaths.push(clipPath);
-        } else if (item.type === "video_clip" && item.source_url) {
-          // Generated asset (e.g., b-roll image converted to video)
+        } else if (item.type === "ai_generated_video" && item.source_url) {
+          // AI-generated video clip (already generated in generateMissingAssets)
+          const localPath = await this.ffmpeg.downloadToTemp(item.source_url);
+          tempFiles.push(localPath);
+
+          let clipPath = localPath;
+          if (item.properties.speed && item.properties.speed !== 1) {
+            const speedPath = await this.ffmpeg.adjustSpeed(clipPath, item.properties.speed);
+            tempFiles.push(speedPath);
+            clipPath = speedPath;
+          }
+
+          videoCutPaths.push(clipPath);
+        } else if ((item.type === "video_clip" || item.type === "image_overlay") && item.source_url) {
+          // Generated asset (e.g., b-roll image converted to video, or pre-generated)
           const localPath = await this.ffmpeg.downloadToTemp(item.source_url);
           tempFiles.push(localPath);
           videoCutPaths.push(localPath);
@@ -720,6 +781,7 @@ export class VideoEditorAgent {
       .insert({
         title: ideaData.concept.substring(0, 100),
         goal: ideaData.concept,
+        project_type: "social_clip" as const,
         status: "draft" as const,
         feedback_history: [],
         footage_asset_ids: [],
@@ -763,8 +825,211 @@ export class VideoEditorAgent {
   }
 
   // ---------------------------------------------------------------------------
+  // Series & Episode Management
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Create a new video series that groups multiple episodes.
+   */
+  async createSeries(
+    title: string,
+    concept: string,
+    projectType: ProjectType,
+    options?: {
+      styleGuide?: CreativeBrief;
+      continuity?: VideoSeries["continuity"];
+      createdBy?: string;
+    },
+  ): Promise<VideoSeries> {
+    const { data, error } = await this.supabase
+      .from("video_series")
+      .insert({
+        title,
+        concept,
+        project_type: projectType,
+        style_guide: options?.styleGuide || null,
+        continuity: options?.continuity || {},
+        episode_plan: [],
+        created_by: options?.createdBy,
+      })
+      .select("*")
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to create video series: ${error.message}`);
+    }
+
+    logger.info(`Created video series "${title}" (${data.id})`);
+    return data as VideoSeries;
+  }
+
+  /**
+   * Get a series by ID.
+   */
+  async getSeries(id: string): Promise<VideoSeries | null> {
+    const { data, error } = await this.supabase
+      .from("video_series")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (error) {
+      if (error.code === "PGRST116") return null;
+      throw new Error(`Failed to fetch series: ${error.message}`);
+    }
+
+    return data as VideoSeries;
+  }
+
+  /**
+   * Generate an episode plan for a series using Gemini Pro.
+   * Creates planned episodes with synopses based on the series concept.
+   */
+  async generateEpisodePlan(
+    seriesId: string,
+    episodeCount: number,
+  ): Promise<VideoSeries> {
+    const series = await this.getSeries(seriesId);
+    if (!series) throw new Error(`Series ${seriesId} not found`);
+
+    const planPrompt =
+      `You are a creative producer planning a ${series.project_type} series.\n\n` +
+      `Series title: "${series.title}"\n` +
+      `Concept: ${series.concept}\n` +
+      `Continuity: ${JSON.stringify(series.continuity)}\n` +
+      (series.style_guide ? `Style guide: ${JSON.stringify(series.style_guide)}\n` : "") +
+      `\nGenerate a plan for ${episodeCount} episodes. Each episode should advance the overall narrative arc ` +
+      `while being self-contained enough to work on its own.\n\n` +
+      `Return a JSON array of episodes.`;
+
+    const episodes = await this.gemini.generateJSON<
+      Array<{
+        episode_number: number;
+        title: string;
+        synopsis: string;
+      }>
+    >(
+      planPrompt,
+      `Generate ${episodeCount} episode plans for the series "${series.title}".`,
+      { model: "pro", maxTokens: 4096, temperature: 0.7 },
+    );
+
+    const episodePlan = episodes.map((ep) => ({
+      episode_number: ep.episode_number,
+      title: ep.title,
+      synopsis: ep.synopsis,
+      status: "planned" as const,
+    }));
+
+    const { data, error } = await this.supabase
+      .from("video_series")
+      .update({
+        episode_plan: episodePlan,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", seriesId)
+      .select("*")
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to update series episode plan: ${error.message}`);
+    }
+
+    logger.info(`Generated ${episodePlan.length} episode plans for series ${seriesId}`);
+    return data as VideoSeries;
+  }
+
+  /**
+   * Create a project for a specific episode in a series.
+   * Inherits style guide and continuity from the series.
+   */
+  async createEpisodeProject(
+    seriesId: string,
+    episodeNumber: number,
+    createdBy?: string,
+  ): Promise<VideoProject> {
+    const series = await this.getSeries(seriesId);
+    if (!series) throw new Error(`Series ${seriesId} not found`);
+
+    const episode = series.episode_plan?.find(
+      (ep) => ep.episode_number === episodeNumber,
+    );
+    if (!episode) {
+      throw new Error(`Episode ${episodeNumber} not found in series plan`);
+    }
+
+    const project = await this.createProject(
+      `${series.title} - Ep ${episodeNumber}: ${episode.title}`,
+      `${episode.synopsis}\n\nSeries context: ${series.concept}\nContinuity: ${JSON.stringify(series.continuity)}`,
+      createdBy,
+      {
+        projectType: series.project_type,
+        creativeBrief: series.style_guide || undefined,
+        seriesId,
+        episodeNumber,
+      },
+    );
+
+    // Update the episode plan to reference this project
+    const updatedPlan = (series.episode_plan || []).map((ep) =>
+      ep.episode_number === episodeNumber
+        ? { ...ep, project_id: project.id, status: "in_production" as const }
+        : ep,
+    );
+
+    await this.supabase
+      .from("video_series")
+      .update({
+        episode_plan: updatedPlan,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", seriesId);
+
+    logger.info(`Created episode project for ${series.title} Ep ${episodeNumber}: ${project.id}`);
+    return project;
+  }
+
+  // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Build creative context string from a project's type and brief for EDL prompts.
+   */
+  private buildBriefContext(project: VideoProject): string {
+    const parts: string[] = [];
+
+    const brief = project.creative_brief;
+    if (!brief) return "";
+
+    if (brief.target_audience) {
+      parts.push(`TARGET AUDIENCE: ${brief.target_audience}`);
+    }
+    if (brief.mood) {
+      parts.push(`MOOD/TONE: ${brief.mood}`);
+    }
+    if (brief.style_references?.length) {
+      parts.push(`STYLE REFERENCES: ${brief.style_references.join(", ")}`);
+    }
+    if (brief.duration_target_ms) {
+      parts.push(`TARGET DURATION: ${Math.round(brief.duration_target_ms / 1000)}s`);
+    }
+    if (brief.aspect_ratio) {
+      parts.push(`ASPECT RATIO: ${brief.aspect_ratio}`);
+    }
+    if (brief.brand_guidelines) {
+      const bg = brief.brand_guidelines;
+      if (bg.tone_of_voice) parts.push(`BRAND TONE: ${bg.tone_of_voice}`);
+      if (bg.colors?.length) parts.push(`BRAND COLORS: ${bg.colors.join(", ")}`);
+    }
+    if (brief.model_preferences?.video_model) {
+      parts.push(`PREFERRED VIDEO MODEL: ${brief.model_preferences.video_model}`);
+    }
+
+    return parts.length > 0
+      ? `CREATIVE BRIEF:\n${parts.join("\n")}\n\n`
+      : "";
+  }
 
   private async updateStatus(
     projectId: string,
@@ -818,8 +1083,8 @@ export class VideoEditorAgent {
   }
 
   /**
-   * Generate any assets referenced in the EDL that don't exist yet
-   * (e.g., b-roll images via fal.ai, TTS audio).
+   * Generate any assets referenced in the EDL that don't exist yet:
+   * AI-generated video clips (Kling v3), b-roll images, enhanced images, TTS audio.
    */
   private async generateMissingAssets(
     edl: EDL,
@@ -827,35 +1092,91 @@ export class VideoEditorAgent {
   ): Promise<void> {
     const generationTasks: Array<Promise<void>> = [];
 
-    // Check for b-roll / generated image needs in video track
     for (const item of edl.tracks.video) {
+      // AI-generated video clips (hero shots, b-roll, transitions, opening/closing)
+      if (
+        item.type === "ai_generated_video" &&
+        !item.source_url &&
+        item.generation?.prompt
+      ) {
+        const gen = item.generation;
+        // generateVideo() is added by fal-service upgrade — check at runtime
+        const fal = this.falService as unknown as Record<string, unknown>;
+        if (typeof fal.generateVideo === "function") {
+          generationTasks.push(
+            (async () => {
+              try {
+                await progressCallback?.(`Generating AI video: ${gen.prompt.substring(0, 50)}...`);
+                const generateVideo = fal.generateVideo as (
+                  prompt: string,
+                  opts?: Record<string, unknown>,
+                ) => Promise<{ url: string; durationMs?: number }>;
+                const videoResult = await generateVideo.call(this.falService,
+                  gen.prompt,
+                  {
+                    duration: gen.duration_seconds ? `${gen.duration_seconds}` : "5",
+                    aspectRatio: gen.aspect_ratio,
+                    imageUrl: gen.reference_image_url,
+                  },
+                );
+                const storagePath = `generated/ai-video-${randomUUID()}.mp4`;
+                const response = await fetch(videoResult.url);
+                if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
+                const buffer = Buffer.from(await response.arrayBuffer());
+                const url = await this.uploadBufferToStorage(buffer, storagePath, "video/mp4");
+                item.source_url = url;
+                if (videoResult.durationMs) {
+                  item.duration_ms = videoResult.durationMs;
+                }
+                logger.info(`AI video generated for ${item.id}: ${url}`);
+              } catch (err) {
+                logger.warn(`Failed to generate AI video for item ${item.id}: ${err}`);
+              }
+            })(),
+          );
+        } else {
+          logger.warn(`AI video generation not available (generateVideo not found on FalService), skipping ${item.id}`);
+        }
+      }
+
+      // AI-generated images (scene backgrounds, product shots, thumbnails, title cards)
       if (
         item.type === "image_overlay" &&
         !item.source_url &&
-        !item.source_asset_id &&
-        item.reasoning
+        !item.source_asset_id
       ) {
-        const reasoningText = item.reasoning!;
-        generationTasks.push(
-          (async () => {
-            try {
-              await progressCallback?.(`Generating b-roll image: ${reasoningText.substring(0, 50)}...`);
-              const imageBuffer = await this.falService.generateImage(
-                reasoningText,
-              );
-              // Upload to storage and update the item's source_url
-              const storagePath = `generated/broll-${randomUUID()}.png`;
-              const url = await this.uploadBufferToStorage(
-                imageBuffer,
-                storagePath,
-                "image/png",
-              );
-              item.source_url = url;
-            } catch (err) {
-              logger.warn(`Failed to generate b-roll for item ${item.id}: ${err}`);
-            }
-          })(),
-        );
+        const prompt = item.generation?.prompt || item.reasoning;
+        if (prompt) {
+          generationTasks.push(
+            (async () => {
+              try {
+                await progressCallback?.(`Generating image: ${prompt.substring(0, 50)}...`);
+                let imageBuffer: Buffer;
+                const fal = this.falService as unknown as Record<string, unknown>;
+                if (item.generation?.reference_image_url && typeof fal.editImage === "function") {
+                  // Use image editing to composite subject into generated background
+                  const editImage = fal.editImage as (
+                    imageUrl: string,
+                    prompt: string,
+                  ) => Promise<Buffer>;
+                  imageBuffer = await editImage.call(
+                    this.falService,
+                    item.generation.reference_image_url,
+                    prompt,
+                  );
+                } else {
+                  imageBuffer = await this.falService.generateImage(prompt);
+                }
+                const storagePath = `generated/img-${randomUUID()}.png`;
+                const url = await this.uploadBufferToStorage(imageBuffer, storagePath, "image/png");
+                item.source_url = url;
+                logger.info(`Image generated for ${item.id}: ${url}`);
+              } catch (err) {
+                logger.warn(`Failed to generate image for item ${item.id}: ${err}`);
+              }
+            })(),
+          );
+        }
       }
     }
 

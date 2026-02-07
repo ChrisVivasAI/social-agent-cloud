@@ -24,6 +24,11 @@ export class TwitterClient {
     });
   }
 
+  /** Expose the underlying TwitterApi instance for direct v2 calls. */
+  getApi(): TwitterApi {
+    return this.client;
+  }
+
   static fromEnv(): TwitterClient {
     if (!process.env.TWITTER_API_KEY) throw new Error("Missing TWITTER_API_KEY");
     if (!process.env.TWITTER_API_KEY_SECRET) throw new Error("Missing TWITTER_API_KEY_SECRET");

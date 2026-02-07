@@ -6,6 +6,7 @@ import type {
   VideoIdea,
   VideoProject,
 } from "../types/index.js";
+import type { DraftedEngagement } from "../services/engagement-monitor.js";
 
 type Block = KnownBlock;
 
@@ -1166,6 +1167,108 @@ export function buildVideoStatusCard(project: VideoProject): Block[] {
           },
         ]
       : []),
+  ];
+}
+
+export function buildEngagementCard(engagement: DraftedEngagement): Block[] {
+  const sentimentEmoji: Record<string, string> = {
+    positive: ":green_heart:",
+    neutral: ":white_circle:",
+    negative: ":warning:",
+    question: ":question:",
+  };
+  const emoji = sentimentEmoji[engagement.sentiment] || ":speech_balloon:";
+
+  return [
+    {
+      type: "header",
+      text: {
+        type: "plain_text",
+        text: "New Engagement",
+        emoji: true,
+      },
+    },
+    {
+      type: "section",
+      fields: [
+        {
+          type: "mrkdwn",
+          text: `*From:* @${engagement.mention.authorUsername}`,
+        },
+        {
+          type: "mrkdwn",
+          text: `${emoji} *Sentiment:* ${engagement.sentiment}`,
+        },
+      ],
+    },
+    { type: "divider" },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Their message:*\n>${truncate(engagement.mention.text, 500).replace(/\n/g, "\n>")}`,
+      },
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Suggested reply:*\n${truncate(engagement.draftReply, 300)}`,
+      },
+    },
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `Tweet ID: \`${engagement.mention.id}\` | ${new Date(engagement.mention.createdAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`,
+        },
+      ],
+    },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Approve & Reply", emoji: true },
+          style: "primary",
+          action_id: "approve_engagement",
+          value: engagement.mention.id,
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Edit Reply", emoji: true },
+          action_id: "edit_engagement",
+          value: engagement.mention.id,
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Dismiss", emoji: true },
+          action_id: "dismiss_engagement",
+          value: engagement.mention.id,
+        },
+      ],
+    },
+  ];
+}
+
+export function buildEditEngagementModal(
+  _mentionId: string,
+  currentDraft: string,
+): Block[] {
+  return [
+    {
+      type: "input",
+      block_id: "engagement_reply",
+      label: { type: "plain_text", text: "Reply (280 max)" },
+      element: {
+        type: "plain_text_input",
+        action_id: "engagement_reply_input",
+        initial_value: currentDraft,
+        max_length: 280,
+        multiline: true,
+      },
+    },
   ];
 }
 

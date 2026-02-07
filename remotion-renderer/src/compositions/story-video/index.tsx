@@ -15,8 +15,15 @@ import { SceneTransition } from "../shared/SceneTransition.js";
 import { TextReveal } from "../shared/TextReveal.js";
 import { GlowEffect } from "../shared/GlowEffect.js";
 import { LowerThird } from "../shared/LowerThird.js";
+import { AnimatedCaption } from "../shared/AnimatedCaption.js";
 
 // --- Schema ---
+
+const timedCaptionSchema = z.object({
+  word: z.string(),
+  startFrame: z.number(),
+  endFrame: z.number(),
+});
 
 const storySceneSchema = z.object({
   type: z.enum([
@@ -40,6 +47,8 @@ export const storyVideoSchema = z.object({
   brandName: z.string().default("Story"),
   accentColor: z.string().default("#d97757"),
   backgroundColor: z.string().default("#141413"),
+  captions: z.array(timedCaptionSchema).optional(),
+  showCaptions: z.boolean().default(true),
 });
 
 export type StoryVideoProps = z.infer<typeof storyVideoSchema>;
@@ -527,6 +536,8 @@ export const StoryVideo: React.FC<StoryVideoProps> = ({
   brandName,
   accentColor,
   backgroundColor,
+  captions,
+  showCaptions,
 }) => {
   let frameOffset = 0;
 
@@ -633,6 +644,52 @@ export const StoryVideo: React.FC<StoryVideoProps> = ({
             return null;
         }
       })}
+
+      {/* Auto-generated captions overlay */}
+      {showCaptions && captions && captions.length > 0 && (() => {
+        const segmentSize = 6;
+        const segments: Array<{ text: string; startFrame: number; endFrame: number }> = [];
+        for (let j = 0; j < captions.length; j += segmentSize) {
+          const chunk = captions.slice(j, j + segmentSize);
+          segments.push({
+            text: chunk.map((c) => c.word).join(" "),
+            startFrame: chunk[0].startFrame,
+            endFrame: chunk[chunk.length - 1].endFrame,
+          });
+        }
+        return segments.map((seg, idx) => (
+          <Sequence
+            key={`caption-${idx}`}
+            from={seg.startFrame}
+            durationInFrames={seg.endFrame - seg.startFrame}
+          >
+            <AbsoluteFill
+              style={{
+                display: "flex",
+                alignItems: "flex-end",
+                justifyContent: "center",
+                paddingBottom: 80,
+              }}
+            >
+              <div style={{
+                backgroundColor: "rgba(0,0,0,0.6)",
+                borderRadius: 8,
+                padding: "12px 24px",
+                maxWidth: "85%",
+              }}>
+                <AnimatedCaption
+                  text={seg.text}
+                  startFrame={0}
+                  endFrame={seg.endFrame - seg.startFrame}
+                  fontSize={36}
+                  color={accentColor}
+                  style="pop"
+                />
+              </div>
+            </AbsoluteFill>
+          </Sequence>
+        ));
+      })()}
     </AbsoluteFill>
   );
 };

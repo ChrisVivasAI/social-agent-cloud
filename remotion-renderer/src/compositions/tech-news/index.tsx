@@ -15,8 +15,15 @@ import { ParticleField } from "../shared/ParticleField.js";
 import { TextReveal } from "../shared/TextReveal.js";
 import { GlowEffect } from "../shared/GlowEffect.js";
 import { SceneTransition } from "../shared/SceneTransition.js";
+import { AnimatedCaption } from "../shared/AnimatedCaption.js";
 
 // --- Schema ---
+
+const timedCaptionSchema = z.object({
+  word: z.string(),
+  startFrame: z.number(),
+  endFrame: z.number(),
+});
 
 const sceneSchema = z.object({
   type: z.enum(["intro", "headline", "key_point", "source", "outro", "hero_image"]),
@@ -38,6 +45,8 @@ export const techNewsVideoSchema = z.object({
   accentColor: z.string().default("#d97757"),
   backgroundColor: z.string().default("#141413"),
   brandName: z.string().default("Tech News"),
+  captions: z.array(timedCaptionSchema).optional(),
+  showCaptions: z.boolean().default(true),
 });
 
 export type TechNewsVideoProps = z.infer<typeof techNewsVideoSchema>;
@@ -525,6 +534,8 @@ export const TechNewsVideo: React.FC<TechNewsVideoProps> = ({
   accentColor,
   backgroundColor,
   brandName,
+  captions,
+  showCaptions,
 }) => {
   // Track key_point index for progress bar
   const totalKeyPoints = scenes.filter((s) => s.type === "key_point").length;
@@ -654,6 +665,53 @@ export const TechNewsVideo: React.FC<TechNewsVideoProps> = ({
             return null;
         }
       })}
+
+      {/* Auto-generated captions overlay */}
+      {showCaptions && captions && captions.length > 0 && (() => {
+        // Group words into segments of ~6 words for readability
+        const segmentSize = 6;
+        const segments: Array<{ text: string; startFrame: number; endFrame: number }> = [];
+        for (let j = 0; j < captions.length; j += segmentSize) {
+          const chunk = captions.slice(j, j + segmentSize);
+          segments.push({
+            text: chunk.map((c) => c.word).join(" "),
+            startFrame: chunk[0].startFrame,
+            endFrame: chunk[chunk.length - 1].endFrame,
+          });
+        }
+        return segments.map((seg, idx) => (
+          <Sequence
+            key={`caption-${idx}`}
+            from={seg.startFrame}
+            durationInFrames={seg.endFrame - seg.startFrame}
+          >
+            <AbsoluteFill
+              style={{
+                display: "flex",
+                alignItems: "flex-end",
+                justifyContent: "center",
+                paddingBottom: 80,
+              }}
+            >
+              <div style={{
+                backgroundColor: "rgba(0,0,0,0.6)",
+                borderRadius: 8,
+                padding: "12px 24px",
+                maxWidth: "85%",
+              }}>
+                <AnimatedCaption
+                  text={seg.text}
+                  startFrame={0}
+                  endFrame={seg.endFrame - seg.startFrame}
+                  fontSize={36}
+                  color={accentColor}
+                  style="pop"
+                />
+              </div>
+            </AbsoluteFill>
+          </Sequence>
+        ));
+      })()}
     </AbsoluteFill>
   );
 };

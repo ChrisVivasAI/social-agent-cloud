@@ -11,8 +11,10 @@ import {
   buildPostedCard,
   buildDiscoveryCard,
   buildRepostSuggestionCard,
+  buildEngagementCard,
 } from "../utils/slack-blocks.js";
 import { ContentDiscoveryService } from "./content-discovery.js";
+import type { DraftedEngagement } from "./engagement-monitor.js";
 import { createSupabaseClient } from "../utils/supabase.js";
 import { logger } from "../utils/logger.js";
 import {
@@ -544,6 +546,36 @@ export class SlackHandlerService {
       text: message,
       thread_ts: threadTs,
     });
+  }
+
+  // ─── Engagement monitoring handlers ───
+
+  async sendEngagementCard(
+    engagement: DraftedEngagement,
+    channelId: string,
+  ): Promise<void> {
+    const client = this.getClient();
+    const blocks = buildEngagementCard(engagement);
+    await client.chat.postMessage({
+      channel: channelId,
+      text: `New engagement from @${engagement.mention.authorUsername}: ${engagement.mention.text.substring(0, 80)}`,
+      blocks,
+    });
+  }
+
+  async handleApproveEngagement(mentionId: string): Promise<string | null> {
+    // Return the mention ID — the caller (slack-listener action handler) will
+    // use the EngagementMonitorService to actually post the reply.
+    return mentionId;
+  }
+
+  async handleDismissEngagement(mentionId: string): Promise<void> {
+    const supabase = createSupabaseClient();
+    await supabase
+      .from("processed_mentions")
+      .update({ replied: false })
+      .eq("mention_id", mentionId);
+    logger.info(`Dismissed engagement for mention ${mentionId}`);
   }
 
   // ─── Episodic memory recording ───

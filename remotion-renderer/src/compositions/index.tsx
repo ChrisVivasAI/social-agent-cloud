@@ -43,6 +43,8 @@ export const RemotionRoot: React.FC = () => {
           subtitle: "Subtitle text",
           backgroundColor: "#1a1a2e",
           accentColor: "#e94560",
+          captions: undefined,
+          showCaptions: true,
         }}
       />
       <Composition
@@ -74,6 +76,8 @@ export const RemotionRoot: React.FC = () => {
           accentColor: "#d97757",
           backgroundColor: "#141413",
           brandName: "Tech News",
+          captions: undefined,
+          showCaptions: true,
         }}
       />
       <Composition
@@ -91,6 +95,8 @@ export const RemotionRoot: React.FC = () => {
           accentColor: "#d97757",
           backgroundColor: "#141413",
           brandName: "Tech News",
+          captions: undefined,
+          showCaptions: false,
         }}
       />
       <Composition
@@ -126,6 +132,8 @@ export const RemotionRoot: React.FC = () => {
           accentColor: "#d97757",
           backgroundColor: "#141413",
           brandName: "Tech News",
+          captions: undefined,
+          showCaptions: true,
         }}
       />
       <Composition
@@ -170,6 +178,8 @@ export const RemotionRoot: React.FC = () => {
           accentColor: "#d97757",
           backgroundColor: "#141413",
           brandName: "Story",
+          captions: undefined,
+          showCaptions: true,
         }}
       />
       <Composition

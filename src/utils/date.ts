@@ -11,6 +11,7 @@ import type { PostingSlot } from "../config/schedule.js";
 import {
   DEFAULT_POSTING_SLOTS,
   MIN_HOURS_BETWEEN_POSTS,
+  loadAdaptedSchedule,
 } from "../config/schedule.js";
 
 /**
@@ -69,14 +70,16 @@ export function getNextSlotDate(
 /**
  * Finds the next available posting slot for a given content type.
  * Ensures minimum spacing between posts.
+ * Accepts an optional custom slots array (e.g. from adaptive scheduling).
  */
 export function findNextAvailableSlot(
   _contentType: string,
   existingScheduledDates: Date[],
   timezone: string,
+  customSlots?: PostingSlot[],
 ): Date {
-  // All slots are content-type-agnostic — iterate all of them
-  const slots = DEFAULT_POSTING_SLOTS;
+  // Use adapted slots if provided, otherwise defaults
+  const slots = customSlots || DEFAULT_POSTING_SLOTS;
 
   // Try each week going forward until we find an open slot
   for (let weekOffset = 0; weekOffset < 8; weekOffset++) {
@@ -131,4 +134,22 @@ export function findNextAsapSlot(
   // No slot within 24h — schedule 1 hour from now
   const soon = new Date(now.getTime() + 60 * 60 * 1000);
   return fromZonedTime(soon, timezone);
+}
+
+/**
+ * Async version of findNextAvailableSlot that loads the adapted schedule
+ * from Supabase first. Falls back to defaults if no adapted schedule exists.
+ */
+export async function findNextAvailableSlotAdaptive(
+  contentType: string,
+  existingScheduledDates: Date[],
+  timezone: string,
+): Promise<Date> {
+  try {
+    const adaptedSlots = await loadAdaptedSchedule();
+    return findNextAvailableSlot(contentType, existingScheduledDates, timezone, adaptedSlots);
+  } catch {
+    // If loading adapted schedule fails, fall back to defaults
+    return findNextAvailableSlot(contentType, existingScheduledDates, timezone);
+  }
 }
