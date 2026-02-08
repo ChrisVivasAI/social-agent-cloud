@@ -30,7 +30,6 @@ async function agentFetch<T = unknown>(path: string, options: FetchOptions = {})
 
 // Queue endpoints
 export const queueApi = {
-  getSummary: () => agentFetch("/api/queue/summary"),
   getItems: (status?: string) =>
     agentFetch(`/api/queue${status ? `?status=${status}` : ""}`),
   getItem: (id: string) => agentFetch(`/api/queue/${id}`),
@@ -43,24 +42,21 @@ export const queueApi = {
   resume: (id: string) => agentFetch(`/api/queue/${id}/resume`, { method: "POST" }),
   retry: (id: string) => agentFetch(`/api/queue/${id}/retry`, { method: "POST" }),
   delete: (id: string) => agentFetch(`/api/queue/${id}`, { method: "DELETE" }),
-  reorder: (ids: string[]) => agentFetch("/api/queue/reorder", { method: "POST", body: { ids } }),
 };
 
 // Engagement endpoints
 export const engagementApi = {
-  getMetrics: (period?: string) =>
-    agentFetch(`/api/engagement/metrics${period ? `?period=${period}` : ""}`),
-  getHistory: (params?: Record<string, string>) => {
+  getItems: (params?: Record<string, string>) => {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
-    return agentFetch(`/api/engagement/history${qs}`);
+    return agentFetch(`/api/engagement${qs}`);
   },
 };
 
 // Video endpoints
 export const videoApi = {
-  getProjects: () => agentFetch("/api/video/projects"),
-  getProject: (id: string) => agentFetch(`/api/video/projects/${id}`),
-  getIdeas: () => agentFetch("/api/video/ideas"),
+  getProjects: () => agentFetch("/api/video-projects"),
+  getProject: (id: string) => agentFetch(`/api/video-projects/${id}`),
+  getIdeas: () => agentFetch("/api/video-ideas"),
   approveIdea: (id: string) =>
     agentFetch(`/api/video-ideas/${id}/approve`, { method: "POST" }),
   rejectIdea: (id: string) =>
@@ -74,7 +70,7 @@ export const videoApi = {
 
 // Discovery endpoints
 export const discoveryApi = {
-  getFeed: () => agentFetch("/api/discovery/feed"),
+  getItems: () => agentFetch("/api/discovery"),
   dismiss: (id: string) => agentFetch(`/api/discovery/${id}/dismiss`, { method: "POST" }),
   queue: (id: string) => agentFetch(`/api/discovery/${id}/queue`, { method: "POST" }),
 };
@@ -82,16 +78,9 @@ export const discoveryApi = {
 // System endpoints
 export const systemApi = {
   getHealth: () => agentFetch("/health"),
-  getStatus: () => agentFetch("/api/system/status"),
-  getMemories: (params?: Record<string, string>) => {
-    const qs = params ? "?" + new URLSearchParams(params).toString() : "";
-    return agentFetch(`/api/system/memories${qs}`);
-  },
-  getVoiceProfile: () => agentFetch("/api/system/voice-profile"),
-  getInsights: () => agentFetch("/api/system/insights"),
-  getSettings: () => agentFetch("/api/system/settings"),
+  getStatus: () => agentFetch("/api/status"),
   updateSettings: (settings: Record<string, unknown>) =>
-    agentFetch("/api/system/settings", { method: "PUT", body: settings }),
+    agentFetch("/api/settings", { method: "PUT", body: settings }),
 };
 
 // Chat endpoint

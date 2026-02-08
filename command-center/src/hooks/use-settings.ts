@@ -28,21 +28,26 @@ export function useSettings(): UseSettingsReturn {
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const client = getSupabaseBrowserClient() as any;
-      const { data } = await client.from("agent_settings").select("*");
+      const { data, error } = await client.from("agent_settings").select("*");
 
-      if (data) {
-        const map: Record<string, unknown> = {};
-        for (const row of data as Array<{ key: string; value: unknown }>) {
-          try {
-            map[row.key] = JSON.parse(row.value as string);
-          } catch {
-            map[row.key] = row.value;
-          }
-        }
-        setSettings(map);
+      // If table doesn't exist, just show empty settings
+      if (error || !data) {
+        setSettings({});
+        return;
       }
+
+      const map: Record<string, unknown> = {};
+      for (const row of data as Array<{ key: string; value: unknown }>) {
+        try {
+          map[row.key] = JSON.parse(row.value as string);
+        } catch {
+          map[row.key] = row.value;
+        }
+      }
+      setSettings(map);
     } catch {
-      // silently fail
+      // silently fail — table may not exist
+      setSettings({});
     } finally {
       setIsLoading(false);
     }

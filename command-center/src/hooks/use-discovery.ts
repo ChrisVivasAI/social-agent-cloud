@@ -30,15 +30,21 @@ export function useDiscovery(): UseDiscoveryReturn {
   const fetchData = useCallback(async () => {
     try {
       const client = getSupabaseBrowserClient();
-      const { data } = await client
+      const { data, error } = await client
         .from("discovered_content")
         .select("*")
         .order("discovered_at", { ascending: false })
         .limit(200);
 
-      if (data) setItems(data as DiscoveredContent[]);
+      // If table doesn't exist, just show empty state
+      if (error) {
+        setItems([]);
+        return;
+      }
+      setItems((data as DiscoveredContent[]) ?? []);
     } catch {
-      // silently fail
+      // silently fail — table may not exist
+      setItems([]);
     } finally {
       setIsLoading(false);
     }

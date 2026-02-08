@@ -31,15 +31,21 @@ export function useEngagement(): UseEngagementReturn {
   const fetchData = useCallback(async () => {
     try {
       const client = getSupabaseBrowserClient();
-      const { data } = await client
+      const { data, error } = await client
         .from("processed_mentions")
         .select("*")
         .order("created_at", { ascending: false })
         .limit(100);
 
-      if (data) setMentions(data as Mention[]);
+      // If table doesn't exist, just show empty state
+      if (error) {
+        setMentions([]);
+        return;
+      }
+      setMentions((data as Mention[]) ?? []);
     } catch {
-      // silently fail on load
+      // silently fail on load — table may not exist
+      setMentions([]);
     } finally {
       setIsLoading(false);
     }

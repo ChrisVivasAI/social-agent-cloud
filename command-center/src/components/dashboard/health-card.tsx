@@ -37,7 +37,7 @@ export function HealthCard() {
   useEffect(() => {
     async function fetchStatus() {
       try {
-        const res = await fetch("/api/proxy/api/system/status");
+        const res = await fetch("/api/proxy/api/status");
         if (res.ok) {
           const data = await res.json();
           setStatus(data);

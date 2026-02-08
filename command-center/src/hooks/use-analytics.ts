@@ -73,7 +73,24 @@ export function useAnalytics(range: DateRange): AnalyticsData {
       const filtered = dateFilter ? baseQuery.gte("posted_at", dateFilter) : baseQuery;
       const { data: rawPosts, error } = await filtered.order("posted_at", { ascending: true });
 
-      if (error) throw error;
+      // If the table doesn't exist (404) or there's a relation error, show empty state
+      if (error) {
+        const code = (error as { code?: string }).code;
+        const status = (error as { details?: string; message?: string }).message ?? "";
+        if (code === "42P01" || status.includes("404") || status.includes("relation")) {
+          setData({
+            dailyMetrics: [],
+            platformComparison: [],
+            contentTypeMetrics: [],
+            timingData: [],
+            topPosts: [],
+            loading: false,
+            error: null,
+          });
+          return;
+        }
+        throw error;
+      }
       const posts = (rawPosts ?? []) as unknown as PostHistoryRecord[];
 
       if (posts.length === 0) {

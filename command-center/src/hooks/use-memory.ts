@@ -28,7 +28,9 @@ export function useMemory(): UseMemoryReturn {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const sb = client as any;
-      const [memoriesRes, profileRes, insightsRes] = await Promise.all([
+
+      // Fetch each table independently so one missing table doesn't block the others
+      const [memoriesRes, profileRes, insightsRes] = await Promise.allSettled([
         sb
           .from("agent_memory")
           .select("*")
@@ -42,9 +44,15 @@ export function useMemory(): UseMemoryReturn {
           .limit(100),
       ]);
 
-      if (memoriesRes.data) setMemories(memoriesRes.data as AgentMemoryEntry[]);
-      if (profileRes.data) setVoiceProfile(profileRes.data as VoiceProfile);
-      if (insightsRes.data) setInsights(insightsRes.data as PerformanceInsight[]);
+      if (memoriesRes.status === "fulfilled" && memoriesRes.value?.data) {
+        setMemories(memoriesRes.value.data as AgentMemoryEntry[]);
+      }
+      if (profileRes.status === "fulfilled" && profileRes.value?.data) {
+        setVoiceProfile(profileRes.value.data as VoiceProfile);
+      }
+      if (insightsRes.status === "fulfilled" && insightsRes.value?.data) {
+        setInsights(insightsRes.value.data as PerformanceInsight[]);
+      }
     } catch {
       // silently fail
     } finally {

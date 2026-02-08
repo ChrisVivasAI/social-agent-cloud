@@ -19,7 +19,17 @@ export function useQueueItems() {
         .order("priority", { ascending: false })
         .order("created_at", { ascending: false });
 
-      if (err) throw err;
+      if (err) {
+        // If the table doesn't exist, show empty state instead of error
+        const code = (err as { code?: string }).code;
+        const msg = (err as { message?: string }).message ?? "";
+        if (code === "42P01" || msg.includes("404") || msg.includes("relation")) {
+          setItems([]);
+          setError(null);
+          return;
+        }
+        throw err;
+      }
       setItems((data as ContentQueueItem[]) || []);
       setError(null);
     } catch (e) {

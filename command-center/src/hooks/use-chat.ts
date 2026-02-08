@@ -2,6 +2,18 @@
 
 import { useState, useCallback, useEffect } from "react";
 
+function generateId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+}
+
 export interface ChatAction {
   type: string;
   label: string;
@@ -71,7 +83,7 @@ export function useChat() {
 
   const sendMessage = useCallback(async (text: string) => {
     const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: generateId(),
       role: "user",
       content: text,
       timestamp: new Date().toISOString(),
@@ -83,7 +95,7 @@ export function useChat() {
     try {
       const response = await postChat(text);
       const agentMsg: ChatMessage = {
-        id: crypto.randomUUID(),
+        id: generateId(),
         role: "agent",
         content: response.reply,
         actions: response.actions as ChatAction[] | undefined,
@@ -92,7 +104,7 @@ export function useChat() {
       setMessages((prev) => [...prev, agentMsg]);
     } catch (err) {
       const errorMsg: ChatMessage = {
-        id: crypto.randomUUID(),
+        id: generateId(),
         role: "agent",
         content: `Error: ${err instanceof Error ? err.message : "Failed to reach agent"}`,
         timestamp: new Date().toISOString(),
